@@ -49,52 +49,65 @@ namespace aux::inline wayland
         std::get<I>(*reinterpret_cast<Callback*>(data))(args...);
     }
 
-    template <client_like T>
+    template <client_like T, class... Callback>
     class wrapper {
+    private:
+        template <size_t... I>
+        auto init(std::index_sequence<I...>) noexcept {
+            if constexpr (sizeof... (I)) {
+                return listener_type<T>{func<std::tuple<Callback...>, I>...};
+            }
+            else {
+                return listener_type<T>{};
+            }
+        }
+
     public:
         wrapper() noexcept
             : ptr{nullptr}
+            , callback{}
             , listener{}
             {
             }
-        explicit wrapper(T* raw)
+        // wrapper(T* raw)
+        //     : ptr{raw}
+        //     , callback{}
+        //     , listener{}
+        //     {
+        //     }
+        explicit wrapper(T* raw, Callback... callback)
             : ptr{raw}
-            , listener{}
+            , callback{std::tuple{callback...}}
+            , listener{init(std::index_sequence_for<Callback...>())}
             {
                 if (raw == nullptr) throw std::runtime_error("null wrapped...");
-            }
-        template <class Callback, size_t... I>
-        wrapper(T* raw, Callback callback, std::index_sequence<I...>)
-            : ptr{raw}
-            , listener{ func<Callback, I>... }
-            {
-                static auto backup = std::move(callback); ///!!!
-                if (0 != wl_proxy_add_listener(reinterpret_cast<wl_proxy*>(this->ptr),
-                                               reinterpret_cast<void(**)(void)>(&this->listener),
-                                               &backup))
-                {
-                    throw std::runtime_error("failed to add listener...");
+
+                if constexpr (sizeof... (callback)) {
+                    if (0 != wl_proxy_add_listener(reinterpret_cast<wl_proxy*>(this->ptr),
+                                                   reinterpret_cast<void(**)(void)>(&this->listener),
+                                                   &this->callback))
+                    {
+                        throw std::runtime_error("failed to add listener...");
+                    }
+                    std::cout << "OK" << std::endl;
                 }
             }
-        wrapper(T* raw, auto... callback)
-            : wrapper(raw, std::tuple{callback...}, std::make_index_sequence<sizeof ...(callback)>())
-            {
-            }
-        explicit wrapper(T* raw, listener_type<T> listener, void* data = nullptr)
-            : ptr{raw}
-            , listener{listener}
-            {
-                if (raw == nullptr) throw std::runtime_error("wrapped null attached...");
-                // if (0 != wl_proxy_add_listener(reinterpret_cast<wl_proxy*>(this->ptr),
-                //                                reinterpret_cast<void(**)(void)>(&this->listener),
-                //                                data))
-                // {
-                //     throw std::runtime_error("failed to add listener...");
-                // }
-                add(listener, data);
-            }
+        // explicit wrapper(T* raw, listener_type<T> listener, void* data = nullptr)
+        //     : ptr{raw}
+        //     , listener{listener}
+        //     {
+        //         if (raw == nullptr) throw std::runtime_error("wrapped null attached...");
+        //         // if (0 != wl_proxy_add_listener(reinterpret_cast<wl_proxy*>(this->ptr),
+        //         //                                reinterpret_cast<void(**)(void)>(&this->listener),
+        //         //                                data))
+        //         // {
+        //         //     throw std::runtime_error("failed to add listener...");
+        //         // }
+        //         add(listener, data);
+        //     }
         wrapper(wrapper&& other) noexcept
             : ptr{std::exchange(other.ptr, nullptr)}
+            , callback{other.callback}
             , listener{other.listener}
             {
             }
@@ -110,6 +123,7 @@ namespace aux::inline wayland
         auto& operator=(wrapper&& other) {
             if (this != &other) {
                 this->ptr = std::exchange(other.ptr, nullptr);
+                this->callback = other.callback;
                 this->listener = other.listener;
             }
             return *this;
@@ -128,16 +142,16 @@ namespace aux::inline wayland
             return wl_proxy_get_id(reinterpret_cast<wl_proxy*>(this->get()));
         }
 
-        void add(listener_type<T> listener, void* data = nullptr) {
-            static auto sl = listener;
-            this->listener = listener;
-            if (0 != wl_proxy_add_listener(reinterpret_cast<wl_proxy*>(this->ptr),
-                                           reinterpret_cast<void(**)(void)>(&this->listener),
-                                           data))
-            {
-                throw std::runtime_error("failed to add listener...");
-            }
-        }
+        // void add(listener_type<T> listener, void* data = nullptr) {
+        //     static auto sl = listener;
+        //     this->listener = listener;
+        //     if (0 != wl_proxy_add_listener(reinterpret_cast<wl_proxy*>(this->ptr),
+        //                                    reinterpret_cast<void(**)(void)>(&this->listener),
+        //                                    data))
+        //     {
+        //         throw std::runtime_error("failed to add listener...");
+        //     }
+        // }
 
     // public:
     //     template <class Ch>
@@ -157,6 +171,7 @@ namespace aux::inline wayland
 
     private:
         T* ptr;
+        std::tuple<Callback...> callback;
         listener_type<T> listener;
     };
 
