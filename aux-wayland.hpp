@@ -14,8 +14,8 @@ namespace aux::inline wayland
     template <class> constexpr wl_interface const *const interface_ptr = nullptr;
     template <class> constexpr std::string_view interface_name = "";
     template <class T> concept client_like = (interface_ptr<T> != nullptr);
-    template <client_like> constexpr void (*client_deleter)(void*) = nullptr;
-    enum class null_listener_type { nil };
+    template <client_like> constexpr void (*deleter)(void*) = nullptr;
+    struct null_listener_type { };
     template <client_like> struct listener_meta_type { using type = null_listener_type; };
     template <client_like T> using listener_type = typename listener_meta_type<T>::type;
     template <class T> concept client_like_without_listener = (std::is_same_v<listener_type<T>, null_listener_type>);
@@ -24,9 +24,9 @@ namespace aux::inline wayland
 #   define INTERN_CLIENT_LIKE_CONCEPT(CLIENT_LIKE, DELETER, LISTENER)         \
     template <> constexpr wl_interface const *const interface_ptr<CLIENT_LIKE> = &CLIENT_LIKE##_interface; \
     template <> constexpr std::string_view interface_name<CLIENT_LIKE> = #CLIENT_LIKE; \
-    template <> constexpr void (*client_deleter<CLIENT_LIKE>)(CLIENT_LIKE*) = DELETER;     \
+    template <> constexpr void (*deleter<CLIENT_LIKE>)(CLIENT_LIKE*) = DELETER;     \
     template <> struct listener_meta_type<CLIENT_LIKE> { using type = LISTENER; };
-    INTERN_CLIENT_LIKE_CONCEPT(wl_display,            wl_display_disconnect,         wl_display_listener)
+    INTERN_CLIENT_LIKE_CONCEPT(wl_display,            wl_display_disconnect,         null_listener_type) //wl_display_listener)
     INTERN_CLIENT_LIKE_CONCEPT(wl_registry,           wl_registry_destroy,           wl_registry_listener)
     INTERN_CLIENT_LIKE_CONCEPT(wl_compositor,         wl_compositor_destroy,         null_listener_type)
     INTERN_CLIENT_LIKE_CONCEPT(wl_output,             wl_output_destroy,             wl_output_listener)
@@ -44,11 +44,36 @@ namespace aux::inline wayland
     INTERN_CLIENT_LIKE_CONCEPT(zwp_tablet_manager_v2, zwp_tablet_manager_v2_destroy, null_listener_type)
 #   undef  INTERN_CLIENT_LIKE_CONCEPT
 
+#if 0
     template <class Callback, size_t I>
     void func(void* data, auto... args) {
         std::get<I>(*reinterpret_cast<Callback*>(data))(args...);
     }
 
+    template  <client_like T, class... Callback>
+    class wrapper {
+    private:
+        // auto init_callback(Callback callback) {
+        //     constexpr size_t N = sizeof (listener_type<T>
+        // }
+
+
+    public:
+        wrapper(T ptr, Callback... callback)
+            : ptr{ptr}
+            , callback{init_callback(callback...)}
+            , listener{}
+            {
+            }
+
+    private:
+        T* ptr;
+        listener_type<T> listener;
+        std::tuple<Callback...> callback;
+    };
+#endif
+
+#if 0
     template <client_like T, class... Callback>
     class wrapper {
     private:
@@ -115,7 +140,7 @@ namespace aux::inline wayland
         ~wrapper() noexcept {
             if (this->ptr) {
                 //std::cout << "deleting... " << this->ptr << '(' << interface_name<T> << ':' << this->get_id() << ')' << std::endl;
-                client_deleter<T>(this->ptr);
+                deleter<T>(this->ptr);
                 this->ptr = nullptr;
             }
         }
@@ -174,9 +199,10 @@ namespace aux::inline wayland
         std::tuple<Callback...> callback;
         listener_type<T> listener;
     };
+#endif
 
     template <client_like T>
-    auto wl_registry_bind(wl_registry* registry, uint32_t name, uint32_t version) noexcept {
+    auto registry_bind(wl_registry* registry, uint32_t name, uint32_t version) noexcept {
         return static_cast<T*>(::wl_registry_bind(registry, name, interface_ptr<T>, version));
     }
 

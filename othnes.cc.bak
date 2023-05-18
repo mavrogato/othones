@@ -1,0 +1,530 @@
+
+#include <bits/utility.h>
+#include <iostream>
+#include <vector>
+#include <source_location>
+#include <filesystem>
+#include <cstring>
+#include <cassert>
+
+#include <unistd.h>
+#include <fcntl.h>
+#include <sys/mman.h>
+
+#include <sycl/sycl.hpp>
+
+#include <wayland-client-core.h>
+#include <wayland-client-protocol.h>
+
+#include "ext-tuple-like.hpp"
+#include "aux-wayland.hpp"
+#include "xdg-shell-v6-client.h"
+
+
+#if 0
+
+inline auto lamed() {
+    return [](auto...) { };
+}
+inline auto lamed(auto&& closure) {
+    static auto cache = closure;
+    return [](auto... args) { return cache(args...); };
+}
+
+int main() {
+    using namespace aux;
+    try {
+        auto display = wrapper(wl_display_connect(nullptr));
+
+        wrapper<wl_compositor> compositor;
+        wrapper<wl_shm> shm;
+        wrapper<zxdg_shell_v6> shell;
+        bool format_checked = false;
+        std::vector<wrapper<wl_output>> outputs;
+
+        auto registry = wrapper(
+            wl_display_get_registry(display),
+            [&](auto registry, uint32_t name, std::string_view interface, uint32_t version) {
+                if (interface == interface_name<wl_compositor>) {
+                    compositor = wrapper(wl_registry_bind<wl_compositor>(registry, name, version));
+                }
+                else if (interface == interface_name<wl_shm>) {
+                    // shm = wrapper(
+                    //     wl_registry_bind<wl_shm>(registry, name, version),
+                    //     [&](auto, uint32_t format) {
+                    //         if (format == WL_SHM_FORMAT_XRGB8888) {
+                    //             format_checked = true;
+                    //         }
+                    //     });
+                }
+                else if (interface == interface_name<zxdg_shell_v6>) {
+                    // shell = wrapper(wl_registry_bind<zxdg_shell_v6>(registry, name, version));
+                }
+                else if (interface == interface_name<wl_output>) {
+                    // static wl_output_listener listener = {
+                    //     .geometry = [](auto... args) noexcept {
+                    //         std::cout << std::tuple{args...} << std::endl;
+                    //     },
+                    //     .mode = [](auto... args) noexcept {
+                    //         std::cout << std::tuple{args...} << std::endl;
+                    //     },
+                    //     .done = [](auto... args) noexcept {
+                    //         std::cout << std::tuple{args...} << std::endl;
+                    //     },
+                    //     .scale = [](auto... args) noexcept {
+                    //         std::cout << std::tuple{args...} << std::endl;
+                    //     },
+                    //     .name = [](auto... args) noexcept {
+                    //         std::cout << std::tuple{args...} << std::endl;
+                    //     },
+                    //     .description = [](auto... args) noexcept {
+                    //         std::cout << std::tuple{args...} << std::endl;
+                    //     },
+                    // };
+                    // outputs.emplace_back(wl_registry_bind<wl_output>(registry, name, version));
+                    // wl_output_add_listener(outputs.back(), &listener, nullptr);
+
+                    outputs.emplace_back(wl_registry_bind<wl_output>(registry, name, version),
+                                         [](auto... args) noexcept {
+                                             std::cout << std::tuple{args...} << std::endl;
+                                         },
+                                         [](auto... args) noexcept {
+                                             std::cout << std::tuple{args...} << std::endl;
+                                         },
+                                         [](auto... args) noexcept {
+                                             std::cout << std::tuple{args...} << std::endl;
+                                         },
+                                         [](auto... args) noexcept {
+                                             std::cout << std::tuple{args...} << std::endl;
+                                         },
+                                         [](auto... args) noexcept {
+                                             std::cout << std::tuple{args...} << std::endl;
+                                         },
+                                         [](auto... args) noexcept {
+                                             std::cout << std::tuple{args...} << std::endl;
+                                         });
+                }
+            },
+            [](auto...) { });
+        wl_display_roundtrip(display);
+
+        assert(compositor);
+        assert(shm);
+        assert(shell);
+        assert(outputs.empty() == false);
+        // for (auto& output : outputs) {
+        //     output.add(wl_output_listener {
+        //             .geometry = lamed([](auto... args) noexcept {
+        //                 std::cout << std::tuple{args...} << std::endl;
+        //             }),
+        //             .mode = lamed([](auto... args) noexcept {
+        //                 std::cout << std::tuple{args...} << std::endl;
+        //             }),
+        //             .done = lamed([](auto... args) noexcept {
+        //                 std::cout << std::tuple{args...} << std::endl;
+        //             }),
+        //             .scale = lamed([](auto... args) noexcept {
+        //                 std::cout << std::tuple{args...} << std::endl;
+        //             }),
+        //             .name = lamed([](auto... args) noexcept {
+        //                 std::cout << std::tuple{args...} << std::endl;
+        //             }),
+        //             .description = lamed([](auto... args) noexcept {
+        //                 std::cout << std::tuple{args...} << std::endl;
+        //             }),
+        //         });
+        // }
+
+        wl_display_roundtrip(display);
+        assert(format_checked);
+    }
+    catch (std::exception& ex) {
+        std::cout << "An exceeption occured: " << ex.what() << std::endl;
+    }
+    return 0;
+}
+#endif
+
+using namespace aux;
+
+#if 0
+template <client_like T>
+class wrapper2 {
+public:
+    auto noop_listener() {
+        auto impl = []<size_t... I>(std::index_sequence<I...>) {
+            return listener_type<T> {
+                ([](auto... args) noexcept {
+                    (void) I;
+                    //std::get<I>(callback)(args...);
+                })...
+            };
+        };
+        return listener_type<T>(impl(std::make_index_sequence<sizeof (listener_type<T>) / sizeof (void*)>()));
+    }
+
+private:
+//    std::function
+};
+
+int main() {
+    auto registry_listener = wrapper2<wl_registry>().noop_listener();
+    std::cout << registry_listener.global << std::endl;
+    std::cout << registry_listener.global_remove << std::endl;
+
+    registry_listener.global(0, 0, 0, 0, 0);
+    registry_listener.global_remove(0, 0, 0);
+}
+#endif
+
+#if 0
+#include <functional>
+
+template <client_like T> constexpr size_t number_of_listener_entries = sizeof (listener_type<T>) / sizeof (void*);
+
+template <client_like T>
+auto f() {
+    constexpr auto N = number_of_listener_entries<T>;
+    constexpr auto IS = std::make_index_sequence<N>();
+    auto noop_function_tuple = []<size_t... I>(std::index_sequence<I...>) {
+        auto t = std::tuple {
+            ([](auto... args) noexcept {
+                (void) I;
+                std::cout << I << ':' << std::tuple{args...} << std::endl;
+            })...
+        };
+
+        return listener_type<T>{(std::get<I>(t))...};
+
+    }(IS);
+    return noop_function_tuple;
+}
+
+double square(double x) { return x * x; }
+
+int main() {
+    auto sqr = std::function{square};
+    std::cout << sqr(3.0) << std::endl;
+
+    std::cout << std::tuple{} << std::endl;
+    std::cout << std::tuple{1,2,3} << std::endl;
+
+    auto p = f<wl_display>();
+    // std::get<0>(p)(0, 0, 0, 0, "hello");
+    // std::get<1>(p)(0, 0, 0);
+    p.error(0, 0, 0, 0, "Hello");
+    p.delete_id(0, 0, 0);
+
+    return 0;
+}
+#endif
+
+#if 0
+template <client_like T>
+class wrapper : public listener_type<T> {
+private:
+    static constexpr auto NOOP_LISTENER = []() {
+        constexpr auto N = sizeof (listener_type<T>) / sizeof (void*);
+        return []<size_t... I>(std::index_sequence<I...>) {
+            return listener_type<T> {
+                ([](auto... args) {
+                    std::cout << "default listener " << interface_name<T> << ':' << I << ':' << std::tuple{args...} << std::endl;
+                })...
+            };
+        }(std::make_index_sequence<N>());
+    }();
+
+public:
+    wrapper(T* raw = nullptr, listener_type<T> listener = NOOP_LISTENER)
+        : listener_type<T>{listener}
+        , ptr{raw}
+        {
+            if constexpr (!std::is_same_v<null_listener_type, T>) {
+                if (this->ptr) {
+                    if (0 != wl_proxy_add_listener(reinterpret_cast<wl_proxy*>(this->ptr),
+                                                   reinterpret_cast<void(**)(void)>(this),
+                                                   nullptr))
+                    {
+                        //throw std::runtime_error("failed to add listener...");
+                    }
+                }
+            }
+        }
+    wrapper(wrapper&& other) noexcept
+        : listener_type<T>{other}
+        , ptr{std::exchange(other.ptr, nullptr)}
+        {
+        }
+    ~wrapper() noexcept {
+        if (this->ptr) {
+            deleter<T>(this->ptr);
+            this->ptr = nullptr;
+        }
+    }
+    operator T*() const {
+        if (!this->ptr) {
+            throw std::runtime_error("wrapper null referred...");
+        }
+        return this->ptr; 
+    }
+    explicit operator bool() const noexcept {
+        return this->ptr != nullptr;
+    }
+
+private:
+    T* ptr;
+};
+
+inline auto lamed() noexcept {
+    return [](auto...) noexcept { };
+}
+
+inline auto lamed(auto&& closure) noexcept {
+    static auto cache = closure;
+    return [](auto... args) {
+        return cache(args...);
+    };
+}
+
+int main() {
+    auto display = wrapper{wl_display_connect(nullptr)};
+    auto registry = wrapper{wl_display_get_registry(display)};
+    auto compositor = wrapper<wl_compositor>{};
+    auto shell = wrapper<zxdg_shell_v6>{};
+     // registry.global = lamed([](auto...) {
+    //     std::cout << "..." << std::endl;
+    // });
+    wl_display_roundtrip(display);
+    return 0;
+}
+#endif
+
+/////////////////////////////////////////////////////////////////////////////
+inline auto lamed() noexcept {
+    return [](auto...) noexcept { };
+}
+
+inline auto lamed(auto&& closure) noexcept {
+    static auto cache = closure;
+    return [](auto... args) {
+        return cache(args...);
+    };
+}
+
+template <client_like T>
+class wrapper {
+private:
+    static inline auto listener_singleton = []() noexcept {
+        static constexpr auto N = sizeof (listener_type<T>) / sizeof (void*);
+        return []<size_t... I>(std::index_sequence<I...>) noexcept {
+            return listener_type<T> {
+                ([](auto... args) noexcept {
+                    (void) I;
+                })...
+            };
+        }(std::make_index_sequence<N>());
+    }();
+
+public:
+    wrapper(T* raw = nullptr) : ptr{raw}
+        {
+            if constexpr (!std::is_same_v<null_listener_type, listener_type<T>>) {
+                if (this->ptr) {
+                    if (0 != wl_proxy_add_listener(reinterpret_cast<wl_proxy*>(this->ptr),
+                                                   reinterpret_cast<void(**)(void)>(&listener_singleton),
+                                                   nullptr))
+                    {
+                        throw std::runtime_error("failed to add listener...");
+                    }
+                }
+            }
+        }
+    wrapper(wrapper&& other) noexcept : ptr{std::exchange(other.ptr, nullptr)}
+        {
+        }
+    auto& operator=(wrapper&& other) {
+        if (other.ptr) {
+            if (this != &other) {
+                this->ptr = std::exchange(other.ptr, nullptr);
+            }
+            return *this;
+        }
+        throw std::runtime_error("assigned wrapped null...");
+    }
+
+    virtual ~wrapper() noexcept {
+        if (this->ptr) {
+            std::cout << "deleting... " << this->ptr << ':' << interface_name<T> << std::endl;
+            deleter<T>(std::exchange(this->ptr, nullptr));
+        }
+    }
+
+    operator T*() const {
+        if (this->ptr) return this->ptr;
+        throw std::runtime_error("referred wrapped null...");
+    }
+
+private:
+    T* ptr;
+
+public:
+    listener_type<T>& listener = listener_singleton;
+};
+
+template <class T = uint32_t, wl_shm_format format = WL_SHM_FORMAT_XRGB8888, size_t bypp = 4>
+inline auto shm_allocate_buffer(wl_shm* shm, size_t cx, size_t cy) {
+    std::string_view xdg_runtime_dir = std::getenv("XDG_RUNTIME_DIR");
+    if (xdg_runtime_dir.empty() || !std::filesystem::exists(xdg_runtime_dir)) {
+        throw std::runtime_error("No XDG_RUNTIME_DIR settings...");
+    }
+    std::string_view tmp_file_title = "/weston-shared-XXXXXX";
+    if (4096 <= xdg_runtime_dir.size() + tmp_file_title.size()) {
+        throw std::runtime_error("The path of XDG_RUNTIME_DIR is too long...");
+    }
+    char tmp_path[4096] = { };
+    auto p = std::strcat(tmp_path, xdg_runtime_dir.data());
+    std::strcat(p, tmp_file_title.data());
+    int fd = mkostemp(tmp_path, O_CLOEXEC);
+    if (fd >= 0) {
+        unlink(tmp_path);
+    }
+    else {
+        throw std::runtime_error("mkostemp failed...");
+    }
+    if (ftruncate(fd, bypp*cx*cy) < 0) {
+        close(fd);
+        throw std::runtime_error("ftruncate failed...");
+    }
+    void* data = mmap(nullptr, bypp*cx*cy, PROT_READ | PROT_WRITE, MAP_SHARED, fd, 0);
+    if (data == MAP_FAILED) {
+        close(fd);
+        throw std::runtime_error("mmap failed...");
+    }
+    return std::tuple{
+        wrapper(wl_shm_pool_create_buffer(wrapper(wl_shm_create_pool(shm, fd, bypp*cx*cy)),
+                                          0, cx, cy, bypp * cx, format)),
+        static_cast<T*>(data),
+    };
+}
+
+#include <chrono>
+
+template <size_t I = std::source_location::current().line()>
+void test() {
+    std::cout << "test: " << I << std::endl;
+}
+
+int main() {
+    auto display = wrapper{wl_display_connect(nullptr)};
+    auto registry = wrapper{wl_display_get_registry(display)};
+
+    wrapper<wl_compositor> compositor;
+    wrapper<wl_shm> shm;
+
+    wrapper<wl_seat> seat;
+    wrapper<wl_pointer> pointer;
+    wrapper<wl_keyboard> keyboard;
+    wrapper<wl_touch> touch;
+    bool escaped = false;
+
+    wrapper<zxdg_shell_v6> shell;
+
+    size_t cx = std::numeric_limits<size_t>::max();
+    size_t cy = std::numeric_limits<size_t>::max();
+    std::vector<wrapper<wl_output>> outputs;
+
+    registry.listener.global = lamed([&](auto, auto registry, uint32_t name, std::string_view interface, uint32_t version) {
+        if (interface == interface_name<wl_compositor>) {
+            compositor = wrapper{registry_bind<wl_compositor>(registry, name, version)};
+        }
+        else if (interface == interface_name<wl_shm>) {
+            shm = wrapper{registry_bind<wl_shm>(registry, name, version)};
+        }
+        else if (interface == interface_name<wl_seat>) {
+            seat = wrapper{registry_bind<wl_seat>(registry, name, version)};
+            seat.listener.capabilities = lamed([&](auto, auto seat, auto capabilities) {
+                if (capabilities & WL_SEAT_CAPABILITY_KEYBOARD) {
+                    keyboard = wrapper{wl_seat_get_keyboard(seat)};
+                    keyboard.listener.key = lamed([&](auto, auto, auto, auto, auto k, auto s) {
+                        if (k == 1 && s == 0) {
+                            escaped = true;
+                        }
+                    });
+                }
+                if (capabilities & WL_SEAT_CAPABILITY_POINTER) {
+                    pointer = wrapper{wl_seat_get_pointer(seat)};
+                }
+                if (capabilities & WL_SEAT_CAPABILITY_TOUCH) {
+                    touch = wrapper{wl_seat_get_touch(seat)};
+                }
+            });
+        }
+        else if (interface == interface_name<zxdg_shell_v6>) {
+            shell = wrapper{registry_bind<zxdg_shell_v6>(registry, name, version)};
+            shell.listener.ping = [](auto, auto shell, auto serial) noexcept {
+                zxdg_shell_v6_pong(shell, serial);
+            };
+        }
+        else if (interface == interface_name<wl_output>) {
+            outputs.emplace_back(wrapper{registry_bind<wl_output>(registry, name, version)});
+            outputs.back().listener.mode = lamed([&](auto, auto, auto, int32_t width, int32_t height, auto) noexcept {
+                cx = std::min<size_t>(cx, width) / 4;
+                cy = std::min<size_t>(cy, height)/ 4;
+            });
+        }
+    });
+    wl_display_roundtrip(display);
+    wl_display_roundtrip(display);
+
+    auto surface = wrapper{wl_compositor_create_surface(compositor)};
+    auto xsurface = wrapper{zxdg_shell_v6_get_xdg_surface(shell, surface)};
+    xsurface.listener.configure = [](auto, auto xsurface, auto serial) noexcept {
+        zxdg_surface_v6_ack_configure(xsurface, serial);
+    };
+
+    auto [buffer, pixels] = shm_allocate_buffer(shm, cx, cy);
+    auto toplevel = wrapper{zxdg_surface_v6_get_toplevel(xsurface)};
+    toplevel.listener.configure = lamed([&](auto, auto, auto w, auto h, auto) {
+        std::cout << std::tuple{w, h} << std::endl;
+        cx = w;
+        cy = h;
+        if (cx && cy) {
+            std::cout << std::tuple{cx, cy} << std::endl;
+            auto [b, p] = shm_allocate_buffer(shm, cx, cy);
+            std::cout << b << std::endl;
+            std::cout << p << std::endl;
+            buffer = std::move(b);
+            pixels = p;
+        }
+    });
+    wl_surface_commit(surface);
+
+    auto que = sycl::queue();
+    std::cout << que.get_device().get_info<sycl::info::device::name>() << std::endl;
+    std::cout << que.get_device().get_info<sycl::info::device::vendor>() << std::endl;
+
+    auto pivot = std::chrono::steady_clock::now();
+    while (wl_display_dispatch(display) != -1) {
+        auto now = std::chrono::steady_clock::now();
+        std::cout << 1.0 / std::chrono::duration<double>(now - pivot).count() << std::endl;
+        pivot = now;
+        if (escaped) break;
+
+        if (cx && cy) {
+            auto pv = sycl::buffer<uint32_t, 2>{pixels, {cy, cx}};
+            que.submit([&](auto& h) noexcept {
+                auto apv = pv.get_access<sycl::access::mode::write>(h);
+                h.parallel_for({cy, cx}, [=](auto idx) noexcept {
+                    apv[idx] = 0x00000000;
+                });
+            });
+        }
+        wl_surface_damage(surface, 0, 0, cx, cy);
+        wl_surface_attach(surface, buffer, 0, 0);
+        wl_surface_commit(surface);
+        wl_display_flush(display);
+    }
+
+    test<>();
+    return 0;
+}
