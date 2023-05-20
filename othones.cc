@@ -104,6 +104,9 @@ namespace aux::inline wayland
 
     template <client_like T> class entity_impl {
     public:
+        entity_impl(entity_impl const&) = delete;
+        entity_impl& operator=(entity_impl const&) = delete;
+
         entity_impl(T* ptr = nullptr) noexcept : ptr{ptr}
             {
             }
@@ -111,16 +114,13 @@ namespace aux::inline wayland
             {
             }
         virtual ~entity_impl() noexcept {
-            if (this->ptr) {
-                std::cerr << "deleting... " << this->ptr << ':' << interface_ptr<T>->name << std::endl;
-                deleter<T>(std::exchange(this->ptr, nullptr));
-            }
+            std::cerr << "try deleting... " << this->ptr << ':' << interface_ptr<T>->name << std::endl;
         }
 
         auto& operator=(entity_impl&& other) {
-            if (!other.ptr) {
-                throw std::runtime_error("assigned wrapped null...");
-            }
+            // if (!other.ptr) {
+            //     throw std::runtime_error("assigned wrapped null...");
+            // }
             if (this != &other) {
                 this->ptr = std::exchange(other.ptr, nullptr);
             }
@@ -133,11 +133,8 @@ namespace aux::inline wayland
             }
             return this->ptr;
         }
-        operator T*&() {
-            return this->ptr;
-        }
 
-    private:
+    protected:
         T* ptr;
     };
 
@@ -148,16 +145,17 @@ namespace aux::inline wayland
             {
             }
         entity(entity&& other)
-            : entity_impl<T>{std::exchange(this->operator T*&(), nullptr)}
+            : entity_impl<T>{std::exchange(this->ptr, nullptr)}
             {
             }
         auto& operator=(entity&& other) {
             // other.ptr null?
-            if (this == &other) {
-                this->operator T*&() = std::exchange(other.operator T*&(), nullptr);
+            if (this != &other) {
+                this->ptr = std::exchange(other.ptr, nullptr);
             }
             return *this;
         }
+
     };
 
     template <client_like_with_listener T>
@@ -192,16 +190,15 @@ namespace aux::inline wayland
                 }
             }
         entity(entity&& other)
-            : entity_impl<T>{std::exchange(this->operator T*&(), nullptr)}
+            : entity_impl<T>{std::exchange(static_cast<entity_impl<T>&>(other), entity_impl<T>{nullptr})}
             , listener_inst{std::move(other.listener_inst)}
-            , listener{*this->listener_inst.get()}
+            , listener{other.listener}
             {
             }
 
         auto& operator=(entity&& other) {
-            // other.ptr null?
-            if (this == &other) {
-                this->operator T*&() = std::exchange(other.operator T*&(), nullptr);
+            if (this != &other) {
+                this->ptr = std::exchange(other.ptr, nullptr);
                 this->listener_inst = std::move(other.listener_inst);
                 this->listener = *this->listener_inst.get();
             }
@@ -251,7 +248,7 @@ namespace aux::inline wayland
         }
         return std::tuple{
             entity(wl_shm_pool_create_buffer(entity(wl_shm_create_pool(shm, fd, bypp*cx*cy)),
-                                                           0, cx, cy, bypp * cx, format)),
+                                             0, cx, cy, bypp * cx, format)),
             static_cast<T*>(data),
         };
     }
@@ -275,6 +272,7 @@ int main() {
     auto display = entity{wl_display_connect(nullptr)};
     auto registry = entity{wl_display_get_registry(display)};
 
+#if 1
     entity<wl_compositor> compositor;
     entity<wl_shm> shm;
 
@@ -360,11 +358,12 @@ int main() {
     std::cout << que.get_device().get_info<sycl::info::device::name>() << std::endl;
     std::cout << que.get_device().get_info<sycl::info::device::vendor>() << std::endl;
 
-    auto pivot = std::chrono::steady_clock::now();
+    using clock = std::chrono::steady_clock;
+    using duration = std::chrono::duration<double>;
+
+    //auto pivot = clock::now();
     while (wl_display_dispatch(display) != -1) {
-        auto now = std::chrono::steady_clock::now();
-        std::cout << 1.0 / std::chrono::duration<double>(now - pivot).count() << std::endl;
-        pivot = now;
+        // std::cout << "***" << duration(pivot - std::exchange(pivot, clock::now())).count() << std::endl;
         if (escaped) break;
 
         if (cx && cy) {
@@ -381,5 +380,6 @@ int main() {
         wl_surface_commit(surface);
         wl_display_flush(display);
     }
+#endif
     return 0;
 }
