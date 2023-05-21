@@ -1,4 +1,4 @@
-
+/////////////////////////////////////////////////////////////////////////////
 #include <iostream>
 #include <vector>
 #include <source_location>
@@ -126,21 +126,22 @@ namespace aux::inline wayland
     template <client_like_with_listener T>
     class wrapper<T> {
     private:
-        static constexpr auto make_default_listener() {
+        static constexpr auto new_default_listener() {
             static constexpr auto N = sizeof (listener_type<T>) / sizeof (void*);
-            return []<size_t... I>(std::index_sequence<I...>) noexcept {
-                return listener_type<T> {
-                    ([](auto... args) noexcept {
-                        (void) I;
-                    })...
-                };
-            }(std::make_index_sequence<N>());
+            return new listener_type<T>{
+                []<size_t... I>(std::index_sequence<I...>) noexcept {
+                    return listener_type<T> {
+                        ([](auto... args) noexcept {
+                            (void) I;
+                        })...
+                    };
+                }(std::make_index_sequence<N>())};
         }
 
     public:
         wrapper(T* raw = nullptr)
             : ptr{make_unique(raw)}
-            , listener{new listener_type<T>{make_default_listener()}}
+            , listener{new_default_listener()}
             {
                 if (ptr != nullptr) {
                     if (0 != wl_proxy_add_listener(reinterpret_cast<wl_proxy*>(operator T*()),
@@ -153,7 +154,6 @@ namespace aux::inline wayland
             }
         operator T*() const { return this->ptr.get(); }
         listener_type<T>* operator->() const { return this->listener.get(); }
-
 
     private:
         unique_ptr_type<T> ptr;
