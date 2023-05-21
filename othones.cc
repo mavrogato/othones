@@ -1,5 +1,4 @@
 
-#include <bits/utility.h>
 #include <iostream>
 #include <vector>
 #include <source_location>
@@ -77,7 +76,6 @@ namespace aux::inline wayland
     template <> constexpr wl_interface const *const interface_ptr<CLIENT> = &CLIENT##_interface; \
     template <> constexpr void (*deleter<CLIENT>)(CLIENT*) = DELETER;   \
     template <> struct listener_type<CLIENT> : LISTENER { };
-
     INTERN_CLIENT_LIKE_CONCEPT(wl_display,            wl_display_disconnect,         empty_type)
     INTERN_CLIENT_LIKE_CONCEPT(wl_registry,           wl_registry_destroy,           wl_registry_listener)
     INTERN_CLIENT_LIKE_CONCEPT(wl_compositor,         wl_compositor_destroy,         empty_type)
@@ -99,67 +97,34 @@ namespace aux::inline wayland
     template <class T>
     concept client_like_with_listener = client_like<T> && !std::is_base_of_v<empty_type, listener_type<T>>;
 
-    template <class> class entity;
-    template <class T> entity(T*) -> entity<T>;
+    template <client_like T>
+    auto make_unique(T* raw = nullptr) noexcept {
+        auto del = [](auto p) noexcept {
+            std::cerr << "deleting... " << p << ':' << interface_ptr<T>->name << std::endl;
+            deleter<T>(p);
+        };
+        return std::unique_ptr<T, decltype (del)>(raw, del);
+    }
+    template <client_like T>
+    using unique_ptr_type = decltype (make_unique<T>());
 
-    template <client_like T> class entity_impl {
-    public:
-        entity_impl(entity_impl const&) = delete;
-        entity_impl& operator=(entity_impl const&) = delete;
-
-        entity_impl(T* ptr = nullptr) noexcept : ptr{ptr}
-            {
-            }
-        entity_impl(entity_impl&& other) noexcept : ptr{std::exchange(other.ptr, nullptr)}
-            {
-            }
-        virtual ~entity_impl() noexcept {
-            std::cerr << "try deleting... " << this->ptr << ':' << interface_ptr<T>->name << std::endl;
-        }
-
-        auto& operator=(entity_impl&& other) {
-            // if (!other.ptr) {
-            //     throw std::runtime_error("assigned wrapped null...");
-            // }
-            if (this != &other) {
-                this->ptr = std::exchange(other.ptr, nullptr);
-            }
-            return *this;
-        }
-
-        operator T*() const {
-            if (!this->ptr) {
-                throw std::runtime_error("referred wrapped null...");
-            }
-            return this->ptr;
-        }
-
-    protected:
-        T* ptr;
-    };
+    template <class> class wrapper;
+    template <class T> wrapper(T*) -> wrapper<T>;
 
     template <client_like T>
-    class entity<T> : public entity_impl<T> {
+    class wrapper<T> {
     public:
-        entity(T* ptr = nullptr) : entity_impl<T>{ptr}
+        wrapper(T* raw = nullptr) : ptr{make_unique(raw)}
             {
             }
-        entity(entity&& other)
-            : entity_impl<T>{std::exchange(this->ptr, nullptr)}
-            {
-            }
-        auto& operator=(entity&& other) {
-            // other.ptr null?
-            if (this != &other) {
-                this->ptr = std::exchange(other.ptr, nullptr);
-            }
-            return *this;
-        }
+        operator T*() const { return this->ptr.get(); }
 
+    private:
+        unique_ptr_type<T> ptr;
     };
 
     template <client_like_with_listener T>
-    class entity<T> : public entity_impl<T> {
+    class wrapper<T> {
     private:
         static constexpr auto make_default_listener() {
             static constexpr auto N = sizeof (listener_type<T>) / sizeof (void*);
@@ -173,43 +138,26 @@ namespace aux::inline wayland
         }
 
     public:
-        entity(T* ptr = nullptr)
-            : entity_impl<T>{ptr}
-            , listener_inst{new listener_type<T>(make_default_listener())}
-            , listener{*this->listener_inst.get()}
+        wrapper(T* raw = nullptr)
+            : ptr{make_unique(raw)}
+            , listener{new listener_type<T>{make_default_listener()}}
             {
-                if constexpr (!std::is_base_of_v<empty_type, listener_type<T>>) {
-                    if (ptr != nullptr) {
-                        if (0 != wl_proxy_add_listener(reinterpret_cast<wl_proxy*>(operator T*()),
-                                                       reinterpret_cast<void(**)(void)>(this->listener_inst.get()),
-                                                       nullptr))
-                        {
-                            throw std::runtime_error("failed to add listener...");
-                        }
+                if (ptr != nullptr) {
+                    if (0 != wl_proxy_add_listener(reinterpret_cast<wl_proxy*>(operator T*()),
+                                                   reinterpret_cast<void(**)(void)>(this->listener.get()),
+                                                   nullptr))
+                    {
+                        throw std::runtime_error("failed to add listener...");
                     }
                 }
             }
-        entity(entity&& other)
-            : entity_impl<T>{std::exchange(static_cast<entity_impl<T>&>(other), entity_impl<T>{nullptr})}
-            , listener_inst{std::move(other.listener_inst)}
-            , listener{other.listener}
-            {
-            }
+        operator T*() const { return this->ptr.get(); }
+        listener_type<T>* operator->() const { return this->listener.get(); }
 
-        auto& operator=(entity&& other) {
-            if (this != &other) {
-                this->ptr = std::exchange(other.ptr, nullptr);
-                this->listener_inst = std::move(other.listener_inst);
-                this->listener = *this->listener_inst.get();
-            }
-            return *this;
-        }
 
     private:
-        std::unique_ptr<listener_type<T>> listener_inst;
-
-    public:
-        listener_type<T>& listener;
+        unique_ptr_type<T> ptr;
+        std::unique_ptr<listener_type<T>> listener;
     };
 
     template <client_like T>
@@ -223,16 +171,11 @@ namespace aux::inline wayland
         if (xdg_runtime_dir.empty() || !std::filesystem::exists(xdg_runtime_dir)) {
             throw std::runtime_error("No XDG_RUNTIME_DIR settings...");
         }
-        std::string_view tmp_file_title = "/weston-shared-XXXXXX";
-        if (4096 <= xdg_runtime_dir.size() + tmp_file_title.size()) {
-            throw std::runtime_error("The path of XDG_RUNTIME_DIR is too long...");
-        }
-        char tmp_path[4096] = { };
-        auto p = std::strcat(tmp_path, xdg_runtime_dir.data());
-        std::strcat(p, tmp_file_title.data());
-        int fd = mkostemp(tmp_path, O_CLOEXEC);
+        std::string tmp_path(xdg_runtime_dir);
+        tmp_path += "/weston-shared-XXXXXX";
+        int fd = mkostemp(tmp_path.data(), O_CLOEXEC);
         if (fd >= 0) {
-            unlink(tmp_path);
+            unlink(tmp_path.c_str());
         }
         else {
             throw std::runtime_error("mkostemp failed...");
@@ -247,7 +190,7 @@ namespace aux::inline wayland
             throw std::runtime_error("mmap failed...");
         }
         return std::tuple{
-            entity(wl_shm_pool_create_buffer(entity(wl_shm_create_pool(shm, fd, bypp*cx*cy)),
+            wrapper(wl_shm_pool_create_buffer(wrapper(wl_shm_create_pool(shm, fd, bypp*cx*cy)),
                                              0, cx, cy, bypp * cx, format)),
             static_cast<T*>(data),
         };
@@ -269,60 +212,59 @@ inline auto lamed(auto&& closure) noexcept {
 int main() {
     using namespace aux;
 
-    auto display = entity{wl_display_connect(nullptr)};
-    auto registry = entity{wl_display_get_registry(display)};
+    auto display = wrapper{wl_display_connect(nullptr)};
+    auto registry = wrapper{wl_display_get_registry(display)};
 
-#if 1
-    entity<wl_compositor> compositor;
-    entity<wl_shm> shm;
+    wrapper<wl_compositor> compositor;
+    wrapper<wl_shm> shm;
 
-    entity<wl_seat> seat;
-    entity<wl_pointer> pointer;
-    entity<wl_keyboard> keyboard;
-    entity<wl_touch> touch;
+    wrapper<wl_seat> seat;
+    wrapper<wl_pointer> pointer;
+    wrapper<wl_keyboard> keyboard;
+    wrapper<wl_touch> touch;
     bool escaped = false;
 
-    entity<zxdg_shell_v6> shell;
+    wrapper<zxdg_shell_v6> shell;
 
     size_t cx = std::numeric_limits<size_t>::max();
     size_t cy = std::numeric_limits<size_t>::max();
-    std::vector<entity<wl_output>> outputs;
+    std::vector<wrapper<wl_output>> outputs;
 
-    registry.listener.global = lamed([&](auto, auto registry, uint32_t name, std::string_view interface, uint32_t version) {
+    registry->global = lamed([&](auto, auto registry, uint32_t name, std::string_view interface, uint32_t version) {
         if (interface == interface_ptr<wl_compositor>->name) {
-            compositor = entity{registry_bind<wl_compositor>(registry, name, version)};
+            compositor = wrapper{registry_bind<wl_compositor>(registry, name, version)};
         }
         else if (interface == interface_ptr<wl_shm>->name) {
-            shm = entity{registry_bind<wl_shm>(registry, name, version)};
+            shm = wrapper{registry_bind<wl_shm>(registry, name, version)};
         }
         else if (interface == interface_ptr<wl_seat>->name) {
-            seat = entity{registry_bind<wl_seat>(registry, name, version)};
-            seat.listener.capabilities = lamed([&](auto, auto seat, auto capabilities) {
+            seat = wrapper{registry_bind<wl_seat>(registry, name, version)};
+            seat->capabilities = lamed([&](auto, auto seat, auto capabilities) {
                 if (capabilities & WL_SEAT_CAPABILITY_KEYBOARD) {
-                    keyboard = entity{wl_seat_get_keyboard(seat)};
-                    keyboard.listener.key = lamed([&](auto, auto, auto, auto, auto k, auto s) {
-                        if (k == 1 && s == 0) {
+                    keyboard = wrapper{wl_seat_get_keyboard(seat)};
+                    keyboard->key = lamed([&](auto, auto, auto, auto, auto k, auto s) {
+                        if ((k == 1 || k == 16) && s == 0) {
                             escaped = true;
                         }
                     });
                 }
                 if (capabilities & WL_SEAT_CAPABILITY_POINTER) {
-                    pointer = entity{wl_seat_get_pointer(seat)};
+                    pointer = wrapper{wl_seat_get_pointer(seat)};
                 }
                 if (capabilities & WL_SEAT_CAPABILITY_TOUCH) {
-                    touch = entity{wl_seat_get_touch(seat)};
+                    touch = wrapper{wl_seat_get_touch(seat)};
                 }
             });
         }
         else if (interface == interface_ptr<zxdg_shell_v6>->name) {
-            shell = entity{registry_bind<zxdg_shell_v6>(registry, name, version)};
-            shell.listener.ping = [](auto, auto shell, auto serial) noexcept {
+            shell = wrapper{registry_bind<zxdg_shell_v6>(registry, name, version)};
+            shell->ping = [](auto, auto shell, auto serial) noexcept {
                 zxdg_shell_v6_pong(shell, serial);
             };
         }
         else if (interface == interface_ptr<wl_output>->name) {
-            outputs.emplace_back(entity{registry_bind<wl_output>(registry, name, version)});
-            outputs.back().listener.mode = lamed([&](auto, auto, auto, int32_t width, int32_t height, auto) noexcept {
+            outputs.emplace_back(wrapper{registry_bind<wl_output>(registry, name, version)});
+            outputs.back()->mode = lamed([&](auto, auto, auto, int32_t width, int32_t height, auto) noexcept {
                 cx = std::min<size_t>(cx, width) / 4;
                 cy = std::min<size_t>(cy, height)/ 4;
             });
@@ -331,15 +273,15 @@ int main() {
     wl_display_roundtrip(display);
     wl_display_roundtrip(display);
 
-    auto surface = entity{wl_compositor_create_surface(compositor)};
-    auto xsurface = entity{zxdg_shell_v6_get_xdg_surface(shell, surface)};
-    xsurface.listener.configure = [](auto, auto xsurface, auto serial) noexcept {
+    auto surface = wrapper{wl_compositor_create_surface(compositor)};
+    auto xsurface = wrapper{zxdg_shell_v6_get_xdg_surface(shell, surface)};
+    xsurface->configure = [](auto, auto xsurface, auto serial) noexcept {
         zxdg_surface_v6_ack_configure(xsurface, serial);
     };
 
     auto [buffer, pixels] = shm_allocate_buffer(shm, cx, cy);
-    auto toplevel = entity{zxdg_surface_v6_get_toplevel(xsurface)};
-    toplevel.listener.configure = lamed([&](auto, auto, auto w, auto h, auto) {
+    auto toplevel = wrapper{zxdg_surface_v6_get_toplevel(xsurface)};
+    toplevel->configure = lamed([&](auto, auto, auto w, auto h, auto) {
         std::cout << std::tuple{w, h} << std::endl;
         cx = w;
         cy = h;
@@ -358,20 +300,14 @@ int main() {
     std::cout << que.get_device().get_info<sycl::info::device::name>() << std::endl;
     std::cout << que.get_device().get_info<sycl::info::device::vendor>() << std::endl;
 
-    using clock = std::chrono::steady_clock;
-    using duration = std::chrono::duration<double>;
-
-    //auto pivot = clock::now();
     while (wl_display_dispatch(display) != -1) {
-        // std::cout << "***" << duration(pivot - std::exchange(pivot, clock::now())).count() << std::endl;
         if (escaped) break;
-
         if (cx && cy) {
             auto pv = sycl::buffer<uint32_t, 2>{pixels, {cy, cx}};
             que.submit([&](auto& h) noexcept {
                 auto apv = pv.get_access<sycl::access::mode::write>(h);
                 h.parallel_for({cy, cx}, [=](auto idx) noexcept {
-                    apv[idx] = 0x00000000;
+                    apv[idx] = 0;
                 });
             });
         }
@@ -380,6 +316,6 @@ int main() {
         wl_surface_commit(surface);
         wl_display_flush(display);
     }
-#endif
+
     return 0;
 }
