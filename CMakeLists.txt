@@ -51,6 +51,10 @@ target_link_libraries(othones
   PRIVATE
   wayland-client)
 
-add_custom_target(run
+add_custom_target(debug
   DEPENDS othones
   COMMAND WAYLAND_DEBUG=1 ./othones)
+
+add_custom_target(run
+  DEPENDS othones
+  COMMAND ./othones)
