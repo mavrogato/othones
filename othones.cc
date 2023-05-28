@@ -1,3 +1,4 @@
+//#define _GLIBCXX_DEBUG
 /////////////////////////////////////////////////////////////////////////////
 #include <iostream>
 #include <vector>
@@ -101,6 +102,8 @@ namespace aux::inline algebra
 
         constexpr auto& negate() noexcept { return apply(std::negate<T>()); }
         constexpr auto operator-() const noexcept { return (+(*this)).negate(); }
+        constexpr auto& lognot() noexcept { return apply(std::bit_not<T>()); }
+        constexpr auto operator~() const noexcept { return (+(*this)).lognot(); }
 
         constexpr auto& operator+=(auto&& rhs) noexcept { return apply(std::plus<T>(), rhs); }
         constexpr auto& operator-=(auto&& rhs) noexcept { return apply(std::minus<T>(), rhs); }
@@ -400,7 +403,7 @@ int main() {
         vec2d position;
     };
     std::vector<vertex> vertices(1);
-    vertices.reserve(1024*1024*1024);
+    //vertices.reserve(1024*1024*1024);
 
     wrapper<zwp_tablet_manager_v2>        tablet_mgr;
     wrapper<zwp_tablet_seat_v2>           tablet_seat;
@@ -456,60 +459,67 @@ int main() {
             tablet_mgr = wrapper{registry_bind<zwp_tablet_manager_v2>(registry, name, version)};
         }
 
-        if (tablet_mgr && seat) {
-            if (!tablet_seat) {
-                tablet_seat = zwp_tablet_manager_v2_get_tablet_seat(tablet_mgr, seat);
-                tablet_seat->tool_added = lamed([&](auto, auto, auto t) {
-                    auto& tool = *tablet_tools.insert(t).first;
-                    tool->removed = lamed([&](auto, auto t) {
-                        std::cout << "tool removed: " << std::endl;
-                        tablet_tools.erase(t);
-                    });
-                    tool->type = [](auto, auto, auto type) {
-                        std::cout << "type: " << type << std::endl;
-                    };
-                    tool->capability = lamed([&](auto, auto, auto capability) {
-                        std::cout << "tool capability: " << capability << std::endl;
-                        switch (capability) {
-                        case ZWP_TABLET_TOOL_V2_CAPABILITY_TILT:
-                            std::cout << "Tilt supported." << std::endl;
-                            tool->tilt = lamed([&](auto, auto, auto x, auto y) {
-                                vertices.back().position -= vec2d{wl_fixed_to_double(x), wl_fixed_to_double(y)};
-                            });
-                            break;
-                        case ZWP_TABLET_TOOL_V2_CAPABILITY_PRESSURE:
-                            std::cout << "Pressure supported." << std::endl;
-                            tool->pressure = lamed([&](auto, auto, auto pressure) {
-                                vertices.back().pressure += pressure;
-                            });
-                            break;
-                        case ZWP_TABLET_TOOL_V2_CAPABILITY_DISTANCE:
-                            std::cout << "Distance supported." << std::endl;
-                            tool->distance = [](auto, auto, auto distance) {
-                                std::cout << "=== " << distance << std::endl;
-                            };
-                            break;
-                        case ZWP_TABLET_TOOL_V2_CAPABILITY_ROTATION:
-                            std::cout << "Rotation supported." << std::endl;
-                            tool->rotation = [](auto, auto, auto rot) {
-                                std::cout << "@@@ " << rot << std::endl;
-                            };
-                            break;
-                        }
-                    });
-                    tool->button = [](auto, auto, auto serial, auto button, auto state) {
-                        std::cout << "^^^ " << std::tuple{serial, button, state} << std::endl;
-                    };
-                    tool->motion = lamed([&](auto, auto, auto x, auto y) {
-                        vertices.back().position += vec2d{wl_fixed_to_double(x), wl_fixed_to_double(y)};
-                    });
-                    tool->frame = lamed([&](auto, auto, auto) {
-                        if (vertices.back().pressure > 0) {
-                            vertices.push_back({});
-                        }
-                    });
+        if (tablet_mgr && seat && !tablet_seat) {
+            tablet_seat = zwp_tablet_manager_v2_get_tablet_seat(tablet_mgr, seat);
+            tablet_seat->tool_added = lamed([&](auto, auto, auto t) {
+                auto& tool = *tablet_tools.insert(t).first;
+                std::cout << "Tool added: " << std::endl;
+                tool->removed = lamed([&](auto, auto t) {
+                    std::cout << "Tool removed: " << std::endl;
+                    tablet_tools.erase(t);
                 });
-            }
+                tool->type = [](auto, auto, auto type) {
+                    std::cout << "Tool type: " << type << std::endl;
+                };
+                tool->proximity_in = [](auto...) {
+                    std::cout << "Tool proximity in" << std::endl;
+                };
+                tool->proximity_out = [](auto...) {
+                    std::cout << "Tool proximity out" << std::endl;
+                };
+                tool->capability = lamed([&](auto, auto, auto capability) {
+                    std::cout << "Tool capability: " << capability;
+                    switch (capability) {
+                    case ZWP_TABLET_TOOL_V2_CAPABILITY_TILT:
+                        std::cout << ", Tilt supported.";
+                        tool->tilt = lamed([&](auto, auto, auto x, auto y) {
+                            //vertices.back().position -= vec2d{wl_fixed_to_double(x), wl_fixed_to_double(y)};
+                            //vertices.back().pressure += std::sqrt(x*x + y*y);
+                        });
+                        break;
+                    case ZWP_TABLET_TOOL_V2_CAPABILITY_PRESSURE:
+                        std::cout << ", Pressure supported.";
+                        tool->pressure = lamed([&](auto, auto, auto pressure) {
+                            vertices.back().pressure += pressure;
+                        });
+                        break;
+                    case ZWP_TABLET_TOOL_V2_CAPABILITY_DISTANCE:
+                        std::cout << ", Distance supported.";
+                        tool->distance = [](auto, auto, auto distance) {
+                            std::cout << "=== " << distance << std::endl;
+                        };
+                        break;
+                    case ZWP_TABLET_TOOL_V2_CAPABILITY_ROTATION:
+                        std::cout << ", Rotation supported.";
+                        tool->rotation = [](auto, auto, auto rot) {
+                            std::cout << "@@@ " << rot << std::endl;
+                        };
+                        break;
+                    }
+                    std::cout << std::endl;
+                });
+                tool->button = [](auto, auto, auto serial, auto button, auto state) {
+                    std::cout << "^^^ " << std::tuple{serial, button, state} << std::endl;
+                };
+                tool->motion = lamed([&](auto, auto, auto x, auto y) {
+                    vertices.back().position += vec2d{wl_fixed_to_double(x), wl_fixed_to_double(y)};
+                });
+                tool->frame = lamed([&](auto, auto, auto) {
+                    if (vertices.back().pressure > 0) {
+                        vertices.push_back({});
+                    }
+                });
+            });
         }
     });
     wl_display_roundtrip(display);
@@ -524,11 +534,10 @@ int main() {
     auto [buffer, pixels] = shm_allocate_buffer(shm, cx, cy);
     auto toplevel = wrapper{zxdg_surface_v6_get_toplevel(xsurface)};
     toplevel->configure = lamed([&](auto, auto, auto w, auto h, auto) {
-        std::cout << std::tuple{w, h} << std::endl;
+        std::cout << "toplevel configured: " << std::tuple{w, h} << std::endl;
         cx = w;
         cy = h;
         if (cx && cy) {
-            std::cout << std::tuple{cx, cy} << std::endl;
             auto [b, p] = shm_allocate_buffer(shm, cx, cy);
             std::cout << b << std::endl;
             std::cout << p << std::endl;
@@ -547,7 +556,7 @@ int main() {
             break;
         }
         if (cx && cy) {
-            static constexpr size_t N = 16;
+            static constexpr size_t N = 32;
             static constexpr double TAU = 2.0 * std::numbers::pi;
             static constexpr double PHI = std::numbers::phi;
 
@@ -565,11 +574,12 @@ int main() {
                     auto av = vbuffer.get_access<sycl::access::mode::read>(h);
                     h.parallel_for({vertices.size()}, [=](auto idx) noexcept {
                         auto vertex = av[idx];
-                        auto n = vertex.pressure / N;
+                        auto n = 1 + vertex.pressure / N;
                         for (uint32_t i = 0; i < n; ++i) {
-                            auto theta = std::polar(sqrt(i)/0.125, i * TAU * PHI);
+                            //auto theta = std::polar(sqrt(i)/2, (1+i) * TAU * PHI);
+                            auto theta = std::complex{0.0,0.0};//std::polar((double) i, (1+i) * TAU * PHI);
                             auto pt = vertex.position + vec2d{theta.real(), theta.imag()};
-                            auto d = 255 * (1.0 - ((double) i / n));
+                            auto d = 255 * (1.0 - ((double) (1+i) / n));
                             auto y = pt[1];
                             auto x = pt[0];
                             if (0 <= x && x < cx && 0 <= y && y < cy) {
@@ -587,7 +597,7 @@ int main() {
             // que.submit([&](auto& h) noexcept {
             //     auto ap = pbuffer.get_access<sycl::access::mode::read_write>(h);
             //     h.parallel_for({cy, cx}, [=](auto idx) noexcept {
-            //         ap[idx] = color{255,255,255,255} - ap[idx];
+            //         ap[idx] = ~ap[idx];
             //     });
             // });
         }
