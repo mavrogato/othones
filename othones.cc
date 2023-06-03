@@ -375,11 +375,87 @@ inline auto lamed(auto&& closure) noexcept {
 }
 
 /////////////////////////////////////////////////////////////////////////////
+#include <coroutine>
+
+struct fiblet {
+    struct promise_type {
+        auto get_return_object() { return fiblet{*this}; }
+        auto initial_suspend() { return std::suspend_never{}; }
+        auto final_suspend() noexcept { return std::suspend_never{}; }
+        auto yield_value(bool cont) {
+            struct awaiter {
+                bool await_ready() { return false; }
+                auto await_suspend(std::coroutine_handle<> h) {
+                    //std::cout << __func__ << std::endl;
+                    return std::noop_coroutine();
+                }
+                void await_resume() {
+                    //std::cout << __func__ << std::endl;
+                }
+            };
+            return awaiter{};
+        }
+        void return_void() { }
+        void unhandled_exception() { std::terminate(); }
+    };
+    using handle = std::coroutine_handle<promise_type>;
+
+    ~fiblet() {
+        if (this->continuation) {
+            this->continuation.destroy();
+        }
+    }
+    fiblet(fiblet const&) = delete;
+    fiblet(fiblet&& other)
+        : continuation{std::exchange(other.continuation, nullptr)}
+        {
+        }
+
+private:
+    explicit fiblet(promise_type& p)
+        : continuation{handle::from_promise(p)}
+        {
+        }
+
+private:
+    handle continuation;
+};
+
+/////////////////////////////////////////////////////////////////////////////
 #include <set>
 
+using namespace aux;
+
+fiblet root() {
+    auto display = wrapper{wl_display_connect(nullptr)};
+    co_yield true;
+}
+
 int main() {
+#if 0
     using namespace aux;
 
+    auto display = wrapper{wl_display_connect(nullptr)};
+    auto registry = wrapper{wl_display_get_registry(display)};
+
+    std::vector<fiblet> root;
+    auto persist = [&](auto... args) -> fiblet {
+        auto [data, registry, name, interface, version] = std::tuple{args...};
+        if (interface_ptr<wl_compositor>->name == std::string_view(interface)) {
+            auto compositor = wrapper{registry_bind<wl_compositor>(registry, name, version)};
+            co_yield true;
+        }
+        co_yield true;
+    };
+
+    registry->global = lamed([&](auto... args) -> void {
+        std::cout << std::tuple(args...) << std::endl;
+        root.push_back(persist(args...));
+        std::cout << "leave persist..." << std::endl;
+    });
+    wl_display_roundtrip(display);
+
+#else
     auto display = wrapper{wl_display_connect(nullptr)};
     auto registry = wrapper{wl_display_get_registry(display)};
 
@@ -403,7 +479,6 @@ int main() {
         vec2d position;
     };
     std::vector<vertex> vertices(1);
-    //vertices.reserve(1024*1024*1024);
 
     wrapper<zwp_tablet_manager_v2>        tablet_mgr;
     wrapper<zwp_tablet_seat_v2>           tablet_seat;
@@ -606,6 +681,6 @@ int main() {
         wl_surface_commit(surface);
         wl_display_flush(display);
     }
-
+#endif
     return 0;
 }
