@@ -175,7 +175,7 @@ namespace aux::inline algebra
 
 namespace std
 {
-    using namespace aux;
+    using namespace aux::algebra;
 
     template <class T, size_t N>
     struct tuple_size<versor<T, N>> { static constexpr auto value = N; };
@@ -421,6 +421,75 @@ private:
     handle continuation;
 };
 
+template <class T>
+struct delay {
+    struct promise_type {
+        auto get_return_object() {
+            return delay{std::coroutine_handle<promise_type>::from_promise(*this)};
+        }
+        auto initial_suspend() {
+            return std::suspend_always{};
+        }
+        auto final_suspend() noexcept {
+            struct awaiter {
+                bool await_ready() noexcept {
+                    return false;
+                }
+                void await_resume() noexcept {
+                }
+                std::coroutine_handle<> await_suspend(std::coroutine_handle<promise_type> h) noexcept {
+                    std::cout << __PRETTY_FUNCTION__ << ':' << (bool) h.promise().previous << std::endl;
+                    if (auto previous = h.promise().previous) {
+                        return previous;
+                    }
+                    return std::noop_coroutine();
+                }
+            };
+            return awaiter{};
+        }
+        void unhandled_exception() {
+            throw;
+        }
+        void return_value(T value) {
+            this->result = std::move(value);
+        }
+
+        T result;
+        std::coroutine_handle<> previous;
+    };
+
+    delay(std::coroutine_handle<promise_type> h) : continuation(h)
+        {
+        }
+    delay(delay&&) = delete;
+    ~delay() {
+        this->continuation.destroy();
+    }
+    auto operator co_await() {
+        struct awaiter {
+            bool await_ready() {
+                return false;
+            }
+            T await_resume() {
+                return std::move(this->continuation.promise().result);
+            }
+            auto await_suspend(std::coroutine_handle<> h) {
+                this->continuation.promise().previous = h;
+                return this->continuation;
+            }
+            std::coroutine_handle<promise_type> continuation;
+        };
+        return awaiter{this->continuation};
+    }
+    T operator()() {
+        this->continuation.resume();
+        return std::move(this->continuation.promise().result);
+    }
+
+private:
+    std::coroutine_handle<promise_type> continuation;
+};
+
 /////////////////////////////////////////////////////////////////////////////
 #include <set>
 
@@ -433,9 +502,21 @@ fiblet root() {
 
 int main() {
 #if 0
+    auto get_random = []() -> delay<int> {
+        co_return 4;
+    };
+    auto test = [&]() -> delay<int> {
+        co_return co_await get_random() + co_await get_random();
+    };
+    std::cout << test()() << std::endl;
     using namespace aux;
 
-    auto display = wrapper{wl_display_connect(nullptr)};
+    auto get_display = []() -> delay<aux::wrapper<wl_display>> {
+        co_return wrapper{wl_display_connect(nullptr)};
+    };
+
+
+    auto display = get_display()();
     auto registry = wrapper{wl_display_get_registry(display)};
 
     std::vector<fiblet> root;
@@ -514,6 +595,13 @@ int main() {
                 }
                 if (capabilities & WL_SEAT_CAPABILITY_TOUCH) {
                     touch = wrapper{wl_seat_get_touch(seat)};
+                    touch->shape = [](auto, auto, auto, auto x, auto y) {
+                        std::cout << std::tuple{x, y} << std::endl;
+                    };
+                    touch->motion = lamed([&](auto, auto, auto, auto, auto x, auto y) {
+                        //std::cout << wl_fixed_to_double(x) << '\t' <<  wl_fixed_to_double(y) << '\r' << std::flush;
+                        vertices.emplace_back(vertex{4096, {wl_fixed_to_double(x), wl_fixed_to_double(y)}});
+                    });
                 }
             });
         }
@@ -559,7 +647,7 @@ int main() {
                         std::cout << ", Tilt supported.";
                         tool->tilt = lamed([&](auto, auto, auto x, auto y) {
                             //vertices.back().position -= vec2d{wl_fixed_to_double(x), wl_fixed_to_double(y)};
-                            //vertices.back().pressure += std::sqrt(x*x + y*y);
+                            vertices.back().pressure += std::sqrt(x*x + y*y);
                         });
                         break;
                     case ZWP_TABLET_TOOL_V2_CAPABILITY_PRESSURE:
@@ -606,6 +694,11 @@ int main() {
         zxdg_surface_v6_ack_configure(xsurface, serial);
     };
 
+    auto que = sycl::queue();
+    std::cout << que.get_device().get_info<sycl::info::device::name>() << std::endl;
+    std::cout << que.get_device().get_info<sycl::info::device::vendor>() << std::endl;
+    auto channels = sycl::malloc_device<double>(cx*cy, que);
+
     auto [buffer, pixels] = shm_allocate_buffer(shm, cx, cy);
     auto toplevel = wrapper{zxdg_surface_v6_get_toplevel(xsurface)};
     toplevel->configure = lamed([&](auto, auto, auto w, auto h, auto) {
@@ -614,6 +707,8 @@ int main() {
         cy = h;
         if (cx && cy) {
             auto [b, p] = shm_allocate_buffer(shm, cx, cy);
+            free(channels, que);
+            channels = sycl::malloc_device<double>(cx*cy, que);
             std::cout << b << std::endl;
             std::cout << p << std::endl;
             buffer = std::move(b);
@@ -622,50 +717,60 @@ int main() {
     });
     wl_surface_commit(surface);
 
-    auto que = sycl::queue();
-    std::cout << que.get_device().get_info<sycl::info::device::name>() << std::endl;
-    std::cout << que.get_device().get_info<sycl::info::device::vendor>() << std::endl;
 
     while (wl_display_dispatch(display) != -1) {
         if (quit) {
             break;
         }
         if (cx && cy) {
-            static constexpr size_t N = 32;
+            static constexpr size_t N = 16;
             static constexpr double TAU = 2.0 * std::numbers::pi;
             static constexpr double PHI = std::numbers::phi;
 
+            auto cbuffer = sycl::buffer<double, 2>{channels, {cy, cx}};
             auto pbuffer = sycl::buffer<color, 2>{pixels, {cy, cx}};
             que.submit([&](auto& h) noexcept {
                 auto ap = pbuffer.get_access<sycl::access::mode::write>(h);
+                auto ac = cbuffer.get_access<sycl::access::mode::write>(h);
                 h.parallel_for({cy, cx}, [=](auto idx) noexcept {
                     ap[idx] = {0, 0, 0, 0};
+                    ac[idx] = 0.0;
                 });
             });
             if (vertices.empty() == false) {
                 auto vbuffer = sycl::buffer<vertex, 1>{vertices.data(), vertices.size()};
                 que.submit([&](auto& h) noexcept {
-                    auto ap = pbuffer.get_access<sycl::access::mode::read_write>(h);
+                    auto ac = cbuffer.get_access<sycl::access::mode::read_write>(h);
                     auto av = vbuffer.get_access<sycl::access::mode::read>(h);
                     h.parallel_for({vertices.size()}, [=](auto idx) noexcept {
                         auto vertex = av[idx];
                         auto n = 1 + vertex.pressure / N;
                         for (uint32_t i = 0; i < n; ++i) {
-                            //auto theta = std::polar(sqrt(i)/2, (1+i) * TAU * PHI);
-                            auto theta = std::complex{0.0,0.0};//std::polar((double) i, (1+i) * TAU * PHI);
+                            auto theta = std::polar(sqrt(i)/4, (1+i) * TAU * PHI);
+                            //auto theta = std::polar(sqrt(i)*32, (1+i) * TAU * PHI);
+                            //auto theta = std::polar((double) i, (1+i) * TAU * PHI);
                             auto pt = vertex.position + vec2d{theta.real(), theta.imag()};
-                            auto d = 255 * (1.0 - ((double) (1+i) / n));
+                            auto d = (1.0 - ((double) (1+i) / n));
                             auto y = pt[1];
                             auto x = pt[0];
                             if (0 <= x && x < cx && 0 <= y && y < cy) {
                                 uint8_t b = d;
-                                auto& c = ap[{(size_t) y, (size_t) x}];
-                                c[0] = std::max(c[0], b);
-                                c[1] = std::max(c[1], b);
-                                c[2] = std::max(c[2], b);
-                                c[3] = std::max(c[3], b);
+                                auto& c = ac[{(size_t) y, (size_t) x}];
+                                c += d;
                             }
                         }
+                    });
+                });
+                que.submit([&](auto& h) noexcept {
+                    auto ac = cbuffer.get_access<sycl::access::mode::read_write>(h);
+                    auto ap = pbuffer.get_access<sycl::access::mode::read_write>(h);
+                    h.parallel_for({cy, cx}, [=](auto idx) noexcept {
+                        auto& p = ap[idx];
+                        auto& c = ac[idx];
+                        p[0] = 255 - 255.0 / (c + 1);
+                        p[1] = 255 - 255.0 / (c + 1);
+                        p[2] = 255 - 255.0 / (c + 1);
+                        p[3] = 255 - 255.0 / (c + 1);
                     });
                 });
             }
@@ -681,6 +786,7 @@ int main() {
         wl_surface_commit(surface);
         wl_display_flush(display);
     }
+    sycl::free(channels, que);
 #endif
     return 0;
 }
