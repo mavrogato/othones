@@ -1,4 +1,3 @@
-//#define _GLIBCXX_DEBUG
 /////////////////////////////////////////////////////////////////////////////
 #include <iostream>
 #include <vector>
@@ -132,7 +131,11 @@ namespace aux::inline algebra
             });
         }
         constexpr auto operator*(value_type s) const noexcept { return (+(*this)) *= s; }
-        constexpr friend auto operator*(value_type s, versor const& v) noexcept { return v * s; }
+        constexpr friend auto operator*(value_type s, versor v) noexcept { return v * s; }
+
+        constexpr friend auto dot(versor const& a, versor const& b) noexcept {
+            return a.last * b.last + dot(static_cast<base_type const&>(a), static_cast<base_type const&>(b));
+        }
     };
 
     template <class T>
@@ -149,7 +152,22 @@ namespace aux::inline algebra
 
     protected:
         constexpr auto& apply(auto&&...) noexcept { return *this; }
+
+        constexpr friend T dot(versor const&, versor const&) noexcept { return T(); }
     };
+
+    template <class T>
+    constexpr auto cross(versor<T, 3> lhs, versor<T, 3> rhs) noexcept {
+        return versor<T, 3>{
+            lhs[1] * rhs[2] - lhs[2] * rhs[1],
+            lhs[2] * rhs[0] - lhs[0] * rhs[2],
+            lhs[0] * rhs[1] - lhs[1] * rhs[0],
+        };
+    }
+    template <class T>
+    constexpr auto det(versor<T, 3> a, versor<T, 3> b, versor<T, 3> c) noexcept {
+        return dot(cross(a, b), c);
+    }
 
     using vec2s = versor<short,  2>;
     using vec2i = versor<int,    2>;
@@ -331,7 +349,7 @@ namespace aux::inline wayland
     using color = aux::versor<std::uint8_t, 4>;
 
     template <class T = color, wl_shm_format format = WL_SHM_FORMAT_XRGB8888, size_t bypp = 4>
-    inline auto shm_allocate_buffer(wl_shm* shm, size_t cx, size_t cy) {
+    [[nodiscard]] inline auto shm_allocate_buffer(wl_shm* shm, size_t cx, size_t cy) {
         std::string_view xdg_runtime_dir = std::getenv("XDG_RUNTIME_DIR");
         if (xdg_runtime_dir.empty() || !std::filesystem::exists(xdg_runtime_dir)) {
             throw std::runtime_error("No XDG_RUNTIME_DIR settings...");
@@ -374,169 +392,13 @@ inline auto lamed(auto&& closure) noexcept {
     };
 }
 
-/////////////////////////////////////////////////////////////////////////////
-#include <coroutine>
-
-struct fiblet {
-    struct promise_type {
-        auto get_return_object() { return fiblet{*this}; }
-        auto initial_suspend() { return std::suspend_never{}; }
-        auto final_suspend() noexcept { return std::suspend_never{}; }
-        auto yield_value(bool cont) {
-            struct awaiter {
-                bool await_ready() { return false; }
-                auto await_suspend(std::coroutine_handle<> h) {
-                    //std::cout << __func__ << std::endl;
-                    return std::noop_coroutine();
-                }
-                void await_resume() {
-                    //std::cout << __func__ << std::endl;
-                }
-            };
-            return awaiter{};
-        }
-        void return_void() { }
-        void unhandled_exception() { std::terminate(); }
-    };
-    using handle = std::coroutine_handle<promise_type>;
-
-    ~fiblet() {
-        if (this->continuation) {
-            this->continuation.destroy();
-        }
-    }
-    fiblet(fiblet const&) = delete;
-    fiblet(fiblet&& other)
-        : continuation{std::exchange(other.continuation, nullptr)}
-        {
-        }
-
-private:
-    explicit fiblet(promise_type& p)
-        : continuation{handle::from_promise(p)}
-        {
-        }
-
-private:
-    handle continuation;
-};
-
-template <class T>
-struct delay {
-    struct promise_type {
-        auto get_return_object() {
-            return delay{std::coroutine_handle<promise_type>::from_promise(*this)};
-        }
-        auto initial_suspend() {
-            return std::suspend_always{};
-        }
-        auto final_suspend() noexcept {
-            struct awaiter {
-                bool await_ready() noexcept {
-                    return false;
-                }
-                void await_resume() noexcept {
-                }
-                std::coroutine_handle<> await_suspend(std::coroutine_handle<promise_type> h) noexcept {
-                    std::cout << __PRETTY_FUNCTION__ << ':' << (bool) h.promise().previous << std::endl;
-                    if (auto previous = h.promise().previous) {
-                        return previous;
-                    }
-                    return std::noop_coroutine();
-                }
-            };
-            return awaiter{};
-        }
-        void unhandled_exception() {
-            throw;
-        }
-        void return_value(T value) {
-            this->result = std::move(value);
-        }
-
-        T result;
-        std::coroutine_handle<> previous;
-    };
-
-    delay(std::coroutine_handle<promise_type> h) : continuation(h)
-        {
-        }
-    delay(delay&&) = delete;
-    ~delay() {
-        this->continuation.destroy();
-    }
-    auto operator co_await() {
-        struct awaiter {
-            bool await_ready() {
-                return false;
-            }
-            T await_resume() {
-                return std::move(this->continuation.promise().result);
-            }
-            auto await_suspend(std::coroutine_handle<> h) {
-                this->continuation.promise().previous = h;
-                return this->continuation;
-            }
-            std::coroutine_handle<promise_type> continuation;
-        };
-        return awaiter{this->continuation};
-    }
-    T operator()() {
-        this->continuation.resume();
-        return std::move(this->continuation.promise().result);
-    }
-
-private:
-    std::coroutine_handle<promise_type> continuation;
-};
-
-/////////////////////////////////////////////////////////////////////////////
 #include <set>
 
-using namespace aux;
+#include <cairo/cairo.h>
+#include <linux/input-event-codes.h>
 
-fiblet root() {
-    auto display = wrapper{wl_display_connect(nullptr)};
-    co_yield true;
-}
-
-int main() {
-#if 0
-    auto get_random = []() -> delay<int> {
-        co_return 4;
-    };
-    auto test = [&]() -> delay<int> {
-        co_return co_await get_random() + co_await get_random();
-    };
-    std::cout << test()() << std::endl;
+int main(int argc, char** argv) {
     using namespace aux;
-
-    auto get_display = []() -> delay<aux::wrapper<wl_display>> {
-        co_return wrapper{wl_display_connect(nullptr)};
-    };
-
-
-    auto display = get_display()();
-    auto registry = wrapper{wl_display_get_registry(display)};
-
-    std::vector<fiblet> root;
-    auto persist = [&](auto... args) -> fiblet {
-        auto [data, registry, name, interface, version] = std::tuple{args...};
-        if (interface_ptr<wl_compositor>->name == std::string_view(interface)) {
-            auto compositor = wrapper{registry_bind<wl_compositor>(registry, name, version)};
-            co_yield true;
-        }
-        co_yield true;
-    };
-
-    registry->global = lamed([&](auto... args) -> void {
-        std::cout << std::tuple(args...) << std::endl;
-        root.push_back(persist(args...));
-        std::cout << "leave persist..." << std::endl;
-    });
-    wl_display_roundtrip(display);
-
-#else
     auto display = wrapper{wl_display_connect(nullptr)};
     auto registry = wrapper{wl_display_get_registry(display)};
 
@@ -545,6 +407,7 @@ int main() {
 
     wrapper<wl_seat> seat;
     wrapper<wl_pointer> pointer;
+    vec2d pointer_current;
     wrapper<wl_keyboard> keyboard;
     wrapper<wl_touch> touch;
     bool quit = false;
@@ -578,12 +441,12 @@ int main() {
                 if (capabilities & WL_SEAT_CAPABILITY_KEYBOARD) {
                     keyboard = wrapper{wl_seat_get_keyboard(seat)};
                     keyboard->key = lamed([&](auto, auto, auto, auto, auto k, auto s) {
-                        if (s == 0) {
+                        if (s == WL_KEYBOARD_KEY_STATE_RELEASED) {
                             switch (k) {
-                            case 16:
-                                quit = true;
-                                break;
-                            case 1:
+                            // case 16:
+                            //     quit = true;
+                            //     break;
+                            case KEY_ESC:
                                 vertices.clear();
                                 break;
                             }
@@ -592,16 +455,30 @@ int main() {
                 }
                 if (capabilities & WL_SEAT_CAPABILITY_POINTER) {
                     pointer = wrapper{wl_seat_get_pointer(seat)};
+                    pointer->motion = lamed([&](auto, auto, auto, auto x, auto y) noexcept {
+                        pointer_current = {
+                            wl_fixed_to_double(x),
+                            wl_fixed_to_double(y),
+                        };
+                    });
+                    // pointer->button = lamed([&](auto... args) noexcept {
+                    //     std::cout << std::tuple{args...} << std::endl;
+                    //     vertices.emplace_back(100000, pointer_current);
+                    //     zxdg_toplevel_v6_show_window_menu(toplevel, seat, serial, x, y);
+                    // });
+                    pointer->axis = lamed([&](auto... args) noexcept {
+                        std::cout << std::tuple{args...} << std::endl;
+                    });
                 }
                 if (capabilities & WL_SEAT_CAPABILITY_TOUCH) {
                     touch = wrapper{wl_seat_get_touch(seat)};
-                    touch->shape = [](auto, auto, auto, auto x, auto y) {
-                        std::cout << std::tuple{x, y} << std::endl;
-                    };
-                    touch->motion = lamed([&](auto, auto, auto, auto, auto x, auto y) {
-                        //std::cout << wl_fixed_to_double(x) << '\t' <<  wl_fixed_to_double(y) << '\r' << std::flush;
-                        vertices.emplace_back(vertex{4096, {wl_fixed_to_double(x), wl_fixed_to_double(y)}});
-                    });
+                    // touch->shape = [](auto, auto, auto, auto x, auto y) {
+                    //     std::cout << std::tuple{x, y} << std::endl;
+                    // };
+                    // touch->motion = lamed([&](auto, auto, auto, auto, auto x, auto y) {
+                    //     //std::cout << wl_fixed_to_double(x) << '\t' <<  wl_fixed_to_double(y) << '\r' << std::flush;
+                    //     vertices.emplace_back(vertex{4096, {wl_fixed_to_double(x), wl_fixed_to_double(y)}});
+                    // });
                 }
             });
         }
@@ -623,6 +500,7 @@ int main() {
         }
 
         if (tablet_mgr && seat && !tablet_seat) {
+            std::cout << "--------------" << std::endl;
             tablet_seat = zwp_tablet_manager_v2_get_tablet_seat(tablet_mgr, seat);
             tablet_seat->tool_added = lamed([&](auto, auto, auto t) {
                 auto& tool = *tablet_tools.insert(t).first;
@@ -697,7 +575,10 @@ int main() {
     auto que = sycl::queue();
     std::cout << que.get_device().get_info<sycl::info::device::name>() << std::endl;
     std::cout << que.get_device().get_info<sycl::info::device::vendor>() << std::endl;
-    auto channels = sycl::malloc_device<double>(cx*cy, que);
+    auto channels = [&] {
+        auto free = [&](auto ptr) { sycl::free(ptr, que); };
+        return std::unique_ptr<double, decltype (free)> { sycl::malloc_device<double>(cx*cy, que), free };
+    }();
 
     auto [buffer, pixels] = shm_allocate_buffer(shm, cx, cy);
     auto toplevel = wrapper{zxdg_surface_v6_get_toplevel(xsurface)};
@@ -707,27 +588,53 @@ int main() {
         cy = h;
         if (cx && cy) {
             auto [b, p] = shm_allocate_buffer(shm, cx, cy);
-            free(channels, que);
-            channels = sycl::malloc_device<double>(cx*cy, que);
+            channels.reset(sycl::malloc_device<double>(cx*cy, que));
             std::cout << b << std::endl;
             std::cout << p << std::endl;
             buffer = std::move(b);
             pixels = p;
         }
     });
-    wl_surface_commit(surface);
+    toplevel->close = lamed([&](auto...) {
+        quit = true;
+    });
+    zxdg_toplevel_v6_set_app_id(toplevel, std::filesystem::path(argv[0]).filename().c_str());
+    if (pointer) {
+        pointer->button = lamed([&](auto, auto, auto serial, auto time, auto button, auto state) noexcept {
+            if (state == WL_POINTER_BUTTON_STATE_PRESSED) {
+                switch (button) {
+                case BTN_LEFT:
+                    vertices.emplace_back(32768u, pointer_current);
+                    break;
+                case BTN_RIGHT:
+                    zxdg_toplevel_v6_show_window_menu(toplevel, seat, serial,
+                                                      pointer_current[0],
+                                                      pointer_current[1]);
+                    break;
+                }
+            }
+        });
+    }
+    if (touch) {
+        touch->motion = lamed([&](auto, auto, auto, auto, auto x, auto y) {
+            vertices.emplace_back(vertex{8192,
+                                         {wl_fixed_to_double(x),
+                                          wl_fixed_to_double(y)}});
+        });
+    }
 
+    wl_surface_commit(surface);
 
     while (wl_display_dispatch(display) != -1) {
         if (quit) {
             break;
         }
         if (cx && cy) {
-            static constexpr size_t N = 16;
+            static constexpr size_t N = 8;
             static constexpr double TAU = 2.0 * std::numbers::pi;
             static constexpr double PHI = std::numbers::phi;
 
-            auto cbuffer = sycl::buffer<double, 2>{channels, {cy, cx}};
+            auto cbuffer = sycl::buffer<double, 2>{channels.get(), {cy, cx}};
             auto pbuffer = sycl::buffer<color, 2>{pixels, {cy, cx}};
             que.submit([&](auto& h) noexcept {
                 auto ap = pbuffer.get_access<sycl::access::mode::write>(h);
@@ -744,7 +651,7 @@ int main() {
                     auto av = vbuffer.get_access<sycl::access::mode::read>(h);
                     h.parallel_for({vertices.size()}, [=](auto idx) noexcept {
                         auto vertex = av[idx];
-                        auto n = 1 + vertex.pressure / N;
+                        auto n = 1 + (vertex.pressure) / N;
                         for (uint32_t i = 0; i < n; ++i) {
                             auto theta = std::polar(sqrt(i)/4, (1+i) * TAU * PHI);
                             //auto theta = std::polar(sqrt(i)*32, (1+i) * TAU * PHI);
@@ -786,7 +693,5 @@ int main() {
         wl_surface_commit(surface);
         wl_display_flush(display);
     }
-    sycl::free(channels, que);
-#endif
     return 0;
 }
