@@ -97,6 +97,8 @@ namespace aux::inline algebra
         }
 
     public:
+        constexpr auto operator<=>(versor const& rhs) const noexcept = default;
+
         constexpr auto operator+() const noexcept { return *this; }
 
         constexpr auto& negate() noexcept { return apply(std::negate<T>()); }
@@ -110,21 +112,6 @@ namespace aux::inline algebra
         constexpr auto operator+(auto&& rhs) const noexcept { return (+(*this)) += rhs; }
         constexpr auto operator-(auto&& rhs) const noexcept { return (+(*this)) -= rhs; }
 
-        constexpr bool operator==(auto&& rhs) const noexcept {
-            if (this->size() == rhs.size()) {
-                if (this->last == rhs.last) {
-                    if constexpr (std::is_rvalue_reference_v<decltype (rhs)>) {
-                        return static_cast<base_type const&>(*this) == std::move(static_cast<base_type&&>(rhs));
-                    }
-                    else {
-                        return static_cast<base_type const&>(*this) == static_cast<base_type const&>(rhs);
-                    }
-                }
-            }
-            return false;
-        }
-
-        // [[obsoleted]]
         constexpr auto& operator*=(value_type s) noexcept {
             return apply([s](value_type x) noexcept {
                 return x * s;
@@ -133,8 +120,15 @@ namespace aux::inline algebra
         constexpr auto operator*(value_type s) const noexcept { return (+(*this)) *= s; }
         constexpr friend auto operator*(value_type s, versor v) noexcept { return v * s; }
 
-        constexpr friend auto dot(versor const& a, versor const& b) noexcept {
-            return a.last * b.last + dot(static_cast<base_type const&>(a), static_cast<base_type const&>(b));
+        constexpr auto& operator/=(value_type d) noexcept {
+            return apply([d](value_type x) noexcept {
+                return x / d;
+            });
+        }
+        constexpr auto operator/(value_type d) const noexcept { return (+(*this)) /= d; }
+
+        constexpr friend auto inner(versor const& a, versor const& b) noexcept {
+            return a.last * b.last + inner(static_cast<base_type const&>(a), static_cast<base_type const&>(b));
         }
     };
 
@@ -148,12 +142,12 @@ namespace aux::inline algebra
         using const_reference = value_type const&;
         using size_type = size_t;
 
-        constexpr bool operator==(auto&&) const noexcept { return true; }
+        constexpr auto operator<=>(versor const& rhs) const noexcept = default;
 
     protected:
         constexpr auto& apply(auto&&...) noexcept { return *this; }
 
-        constexpr friend T dot(versor const&, versor const&) noexcept { return T(); }
+        constexpr friend T inner(versor const&, versor const&) noexcept { return T(); }
     };
 
     template <class T>
@@ -166,7 +160,7 @@ namespace aux::inline algebra
     }
     template <class T>
     constexpr auto det(versor<T, 3> a, versor<T, 3> b, versor<T, 3> c) noexcept {
-        return dot(cross(a, b), c);
+        return inner(cross(a, b), c);
     }
 
     using vec2s = versor<short,  2>;
@@ -182,7 +176,7 @@ namespace aux::inline algebra
     using vec4f = versor<float,  4>;
     using vec4d = versor<double, 4>;
 
-} // namespace aux::inline algebra
+} // ::aux::algebra
 
 /////////////////////////////////////////////////////////////////////////////
 #include <concepts>
@@ -223,6 +217,7 @@ namespace std
         }(std::make_index_sequence<std::tuple_size_v<T>>());
         return output.put(')');
     }
+
 } // ::std
 
 
