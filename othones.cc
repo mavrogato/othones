@@ -455,7 +455,7 @@ int main(int, char** argv) {
 
     wrapper<zxdg_shell_v6> shell;
 
-    constexpr int S = 2;
+    size_t scale = 2; // possible maximum scale, would be adjust to the smallest output...
     size_t cx = 1920;
     size_t cy = 1080;
     std::vector<wrapper<wl_output>> outputs;
@@ -497,15 +497,15 @@ int main(int, char** argv) {
                     pointer = wrapper{wl_seat_get_pointer(seat)};
                     pointer->motion = lamed([&](auto, auto, auto, auto x, auto y) noexcept {
                         pointer_current = {
-                            S * wl_fixed_to_double(x),
-                            S * wl_fixed_to_double(y),
+                            scale * wl_fixed_to_double(x),
+                            scale * wl_fixed_to_double(y),
                         };
                     });
                     pointer->enter = lamed([&](auto, auto, auto, auto surface, auto x, auto y) noexcept {
                         pointer_surface = surface;
                         pointer_current = {
-                            S * wl_fixed_to_double(x),
-                            S * wl_fixed_to_double(y),
+                            scale * wl_fixed_to_double(x),
+                            scale * wl_fixed_to_double(y),
                         };
                     });
                     pointer->leave = lamed([&](auto...) noexcept {
@@ -539,9 +539,9 @@ int main(int, char** argv) {
                 }
                 if (capabilities & WL_SEAT_CAPABILITY_TOUCH) {
                     touch = wrapper{wl_seat_get_touch(seat)};
-                    // touch->motion = lamed([&](auto, auto, auto, auto, auto x, auto y) {
-                    //     vertices.emplace_back(wl_fixed_to_double(x), wl_fixed_to_double(y));
-                    // });
+                    touch->motion = lamed([&](auto, auto, auto, auto, auto x, auto y) {
+                        vertices.emplace_back(scale*wl_fixed_to_double(x), scale*wl_fixed_to_double(y));
+                    });
                 }
             });
         }
@@ -554,8 +554,11 @@ int main(int, char** argv) {
         else if (interface == interface_ptr<wl_output>->name) {
             outputs.emplace_back(wrapper{registry_bind<wl_output>(registry, name, version)});
             outputs.back()->mode = lamed([&](auto, auto, auto, int32_t width, int32_t height, auto) noexcept {
-                cx = std::min<size_t>(cx, width)  / 2;
-                cy = std::min<size_t>(cy, height) / 2;
+                cx = scale * 3 * std::min<size_t>(cx, width)  / 4;
+                cy = scale * 3 * std::min<size_t>(cy, height) / 4;
+            });
+            outputs.back()->scale = lamed([&](auto, auto, auto s) {
+                scale = std::min<int>(s, scale);
             });
         }
         else if (interface == interface_ptr<zwp_tablet_manager_v2>->name) {
@@ -616,7 +619,7 @@ int main(int, char** argv) {
                 };
                 tool->motion = lamed([&](auto, auto, auto x, auto y) {
                     //vertices.back().position += vec2d{wl_fixed_to_double(x), wl_fixed_to_double(y)};
-                    vertices.emplace_back(S*wl_fixed_to_double(x), S*wl_fixed_to_double(y));
+                    vertices.emplace_back(scale*wl_fixed_to_double(x), scale*wl_fixed_to_double(y));
                 });
                 tool->frame = lamed([&](auto, auto, auto) {
                     // if (vertices.back().pressure > 0) {
@@ -630,7 +633,7 @@ int main(int, char** argv) {
     wl_display_roundtrip(display);
 
     auto surface = wrapper{wl_compositor_create_surface(compositor)};
-    wl_surface_set_buffer_scale(surface, 2);
+    wl_surface_set_buffer_scale(surface, scale);
     auto xsurface = wrapper{zxdg_shell_v6_get_xdg_surface(shell, surface)};
     xsurface->configure = [](auto, auto xsurface, auto serial) noexcept {
         zxdg_surface_v6_ack_configure(xsurface, serial);
@@ -653,8 +656,8 @@ int main(int, char** argv) {
     auto [fd, buffer, pixels] = shm_allocate_buffer(shm, cx, cy);
     auto toplevel = wrapper{zxdg_surface_v6_get_toplevel(xsurface)};
     toplevel->configure = lamed([&](auto, auto, auto w, auto h, auto) {
-        cx = 2*w;
-        cy = 2*h;
+        cx = scale*w;
+        cy = scale*h;
         if (cx * cy) {
             std::tie(fd, buffer, pixels) = shm_allocate_buffer(shm, cx, cy);
             for (auto& channel : channels) {
@@ -675,8 +678,8 @@ int main(int, char** argv) {
                     break;
                 case BTN_RIGHT:
                     zxdg_toplevel_v6_show_window_menu(toplevel, seat, serial,
-                                                      pointer_current[0],
-                                                      pointer_current[1]);
+                                                      pointer_current[0] / scale,
+                                                      pointer_current[1] / scale); //!!!
                     break;
                 }
             }
