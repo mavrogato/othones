@@ -6,7 +6,7 @@ set(CMAKE_C_COMPILER "clang")
 set(CMAKE_C_STANDARD "17")
 set(CMAKE_CXX_COMPILER "clang++")
 set(CMAKE_CXX_STANDARD 23)
-set(CMAKE_CXX_FLAGS "-fsycl -fsycl-targets=nvptx64-nvidia-cuda -Wno-unknown-cuda-version")
+set(CMAKE_CXX_FLAGS "-O3 -Wall -Wextra -fsycl -fsycl-targets=nvptx64-nvidia-cuda -Wno-unknown-cuda-version")
 
 include_directories(
   ${CMAKE_CURRENT_BINARY_DIR})

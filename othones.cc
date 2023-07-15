@@ -276,7 +276,7 @@ namespace aux::inline wayland
     auto make_unique(T* raw = nullptr) noexcept {
         // (Closures are needed to move the unique...)
         auto del = [](auto p) noexcept {
-            std::cerr << "deleting... " << p << ':' << interface_ptr<T>->name << std::endl;
+            //std::cerr << "deleting... " << p << ':' << interface_ptr<T>->name << std::endl;
             deleter<T>(p);
         };
         return std::unique_ptr<T, decltype (del)>(raw, del);
@@ -307,7 +307,7 @@ namespace aux::inline wayland
             return new listener_type<T>{
                 []<size_t... I>(std::index_sequence<I...>) noexcept {
                     return listener_type<T> {
-                        ([](auto... args) noexcept {
+                        ([](auto...) noexcept {
                             (void) I;
                         })...
                     };
@@ -343,7 +343,36 @@ namespace aux::inline wayland
 
     using color = aux::versor<std::uint8_t, 4>;
 
-    template <class T = color, wl_shm_format format = WL_SHM_FORMAT_XRGB8888, size_t bypp = 4>
+    struct unique_fd {
+        int fd;
+
+        unique_fd(unique_fd const&) = delete;
+        unique_fd& operator=(unique_fd const&) = delete;
+
+        explicit unique_fd(int fd = -1) noexcept
+            : fd{fd}
+            {
+            }
+        unique_fd(unique_fd&& other) noexcept
+            : fd{std::exchange(other.fd, -1)}
+            {
+            }
+        ~unique_fd() noexcept {
+            if (this->fd != -1) {
+                ::close(fd);
+                this->fd = -1;
+            }
+        }
+        auto& operator=(unique_fd&& other) noexcept {
+            if (this != &other) {
+                std::swap(this->fd, other.fd);
+            }
+            return *this;
+        }
+        operator int() const noexcept { return this->fd; }
+    };
+
+    template <class T = color, wl_shm_format format = WL_SHM_FORMAT_ARGB8888, size_t bypp = 4>
     [[nodiscard]] inline auto shm_allocate_buffer(wl_shm* shm, size_t cx, size_t cy) {
         std::string_view xdg_runtime_dir = std::getenv("XDG_RUNTIME_DIR");
         if (xdg_runtime_dir.empty() || !std::filesystem::exists(xdg_runtime_dir)) {
@@ -351,25 +380,24 @@ namespace aux::inline wayland
         }
         std::string tmp_path(xdg_runtime_dir);
         tmp_path += "/weston-shared-XXXXXX";
-        int fd = mkostemp(tmp_path.data(), O_CLOEXEC);
+        unique_fd fd{::mkostemp(tmp_path.data(), O_CLOEXEC)};
         if (fd >= 0) {
-            unlink(tmp_path.c_str());
+            ::unlink(tmp_path.c_str());
         }
         else {
             throw std::runtime_error("mkostemp failed...");
         }
-        if (ftruncate(fd, bypp*cx*cy) < 0) {
-            close(fd);
+        if (::ftruncate(fd, bypp*cx*cy) < 0) {
             throw std::runtime_error("ftruncate failed...");
         }
         void* data = mmap(nullptr, bypp*cx*cy, PROT_READ | PROT_WRITE, MAP_SHARED, fd, 0);
         if (data == MAP_FAILED) {
-            close(fd);
             throw std::runtime_error("mmap failed...");
         }
         return std::tuple{
+            std::move(fd),
             wrapper(wl_shm_pool_create_buffer(wrapper(wl_shm_create_pool(shm, fd, bypp*cx*cy)),
-                                             0, cx, cy, bypp * cx, format)),
+                                              0, cx, cy, bypp * cx, format)),
             static_cast<T*>(data),
         };
     }
@@ -387,12 +415,36 @@ inline auto lamed(auto&& closure) noexcept {
     };
 }
 
+template <uint8_t A = 0xff>
+constexpr aux::versor<uint8_t, 4> hue(uint32_t h) noexcept {
+    constexpr uint8_t s = 0xff;
+    uint8_t v = static_cast<uint8_t>(h);
+    if (h <= s) return { 0, v, s, A };
+    h -= s;
+    v -= s;
+    if (h <= s) return { 0, s,~v, A };
+    h -= s;
+    v -= s;
+    if (h <= s) return { v, s, 0, A };
+    h -= s;
+    v -= s;
+    if (h <= s) return { s,~v, 0, A };
+    h -= s;
+    v -= s;
+    if (h <= s) return { s, 0, v, A };
+    h -= s;
+    v -= s;
+    if (h <= s) return {~v, 0, s, A };
+
+    return {0, 0, 0, A};
+}
+
 #include <set>
 
 #include <cairo/cairo.h>
 #include <linux/input-event-codes.h>
 
-int main(int argc, char** argv) {
+int main(int, char** argv) {
     using namespace aux;
     auto display = wrapper{wl_display_connect(nullptr)};
     auto registry = wrapper{wl_display_get_registry(display)};
@@ -402,22 +454,23 @@ int main(int argc, char** argv) {
 
     wrapper<wl_seat> seat;
     wrapper<wl_pointer> pointer;
-    vec2d pointer_current;
     wrapper<wl_keyboard> keyboard;
     wrapper<wl_touch> touch;
     bool quit = false;
 
     wrapper<zxdg_shell_v6> shell;
 
+    constexpr int S = 2;
     size_t cx = 1920;
     size_t cy = 1080;
     std::vector<wrapper<wl_output>> outputs;
 
-    struct vertex {
-        uint32_t pressure;
-        vec2d position;
-    };
-    std::vector<vertex> vertices(1);
+    uint32_t M = 144;
+    uint32_t N = 233;
+    double D = 2.0;
+    wl_surface* pointer_surface = nullptr;
+    vec2d pointer_current = {};
+    std::vector<vec2d> vertices;
 
     wrapper<zwp_tablet_manager_v2>        tablet_mgr;
     wrapper<zwp_tablet_seat_v2>           tablet_seat;
@@ -438,9 +491,6 @@ int main(int argc, char** argv) {
                     keyboard->key = lamed([&](auto, auto, auto, auto, auto k, auto s) {
                         if (s == WL_KEYBOARD_KEY_STATE_RELEASED) {
                             switch (k) {
-                            // case 16:
-                            //     quit = true;
-                            //     break;
                             case KEY_ESC:
                                 vertices.clear();
                                 break;
@@ -452,27 +502,50 @@ int main(int argc, char** argv) {
                     pointer = wrapper{wl_seat_get_pointer(seat)};
                     pointer->motion = lamed([&](auto, auto, auto, auto x, auto y) noexcept {
                         pointer_current = {
-                            wl_fixed_to_double(x),
-                            wl_fixed_to_double(y),
+                            S * wl_fixed_to_double(x),
+                            S * wl_fixed_to_double(y),
                         };
                     });
-                    // pointer->button = lamed([&](auto... args) noexcept {
-                    //     std::cout << std::tuple{args...} << std::endl;
-                    //     vertices.emplace_back(100000, pointer_current);
-                    //     zxdg_toplevel_v6_show_window_menu(toplevel, seat, serial, x, y);
-                    // });
-                    pointer->axis = lamed([&](auto... args) noexcept {
-                        std::cout << std::tuple{args...} << std::endl;
+                    pointer->enter = lamed([&](auto, auto, auto, auto surface, auto x, auto y) noexcept {
+                        pointer_surface = surface;
+                        pointer_current = {
+                            S * wl_fixed_to_double(x),
+                            S * wl_fixed_to_double(y),
+                        };
+                    });
+                    pointer->leave = lamed([&](auto...) noexcept {
+                        pointer_surface = nullptr;
+                    });
+                    pointer->axis = lamed([&](auto, auto, auto, auto axis, auto value) noexcept {
+                        if (axis == WL_POINTER_AXIS_HORIZONTAL_SCROLL) {
+                            if (value < 0) {
+                                auto tmp = M;
+                                M = N;
+                                N += tmp;
+                            }
+                            else {
+                                auto tmp = N;
+                                N = M;
+                                M = std::max<uint32_t>(tmp - M, 1);
+                            }
+                            std::cout << N << std::endl;
+                        }
+                        if (axis == WL_POINTER_AXIS_VERTICAL_SCROLL) {
+                            if (value < 0) {
+                                D *= 1.1;
+                            }
+                            else {
+                                D /= 1.1;
+                            }
+                            std::cout << D << std::endl;
+                        }
+
                     });
                 }
                 if (capabilities & WL_SEAT_CAPABILITY_TOUCH) {
                     touch = wrapper{wl_seat_get_touch(seat)};
-                    // touch->shape = [](auto, auto, auto, auto x, auto y) {
-                    //     std::cout << std::tuple{x, y} << std::endl;
-                    // };
                     // touch->motion = lamed([&](auto, auto, auto, auto, auto x, auto y) {
-                    //     //std::cout << wl_fixed_to_double(x) << '\t' <<  wl_fixed_to_double(y) << '\r' << std::flush;
-                    //     vertices.emplace_back(vertex{4096, {wl_fixed_to_double(x), wl_fixed_to_double(y)}});
+                    //     vertices.emplace_back(wl_fixed_to_double(x), wl_fixed_to_double(y));
                     // });
                 }
             });
@@ -495,7 +568,6 @@ int main(int argc, char** argv) {
         }
 
         if (tablet_mgr && seat && !tablet_seat) {
-            std::cout << "--------------" << std::endl;
             tablet_seat = zwp_tablet_manager_v2_get_tablet_seat(tablet_mgr, seat);
             tablet_seat->tool_added = lamed([&](auto, auto, auto t) {
                 auto& tool = *tablet_tools.insert(t).first;
@@ -519,14 +591,14 @@ int main(int argc, char** argv) {
                     case ZWP_TABLET_TOOL_V2_CAPABILITY_TILT:
                         std::cout << ", Tilt supported.";
                         tool->tilt = lamed([&](auto, auto, auto x, auto y) {
-                            //vertices.back().position -= vec2d{wl_fixed_to_double(x), wl_fixed_to_double(y)};
-                            vertices.back().pressure += std::sqrt(x*x + y*y);
+                            //vertices.back().position -= vec2d{wl  _fixed_to_double(x), wl_fixed_to_double(y)};
+                            //vertices.back().pressure += std::sqrt(x*x + y*y);
                         });
                         break;
                     case ZWP_TABLET_TOOL_V2_CAPABILITY_PRESSURE:
                         std::cout << ", Pressure supported.";
                         tool->pressure = lamed([&](auto, auto, auto pressure) {
-                            vertices.back().pressure += pressure;
+                            //vertices.back().pressure += pressure;
                         });
                         break;
                     case ZWP_TABLET_TOOL_V2_CAPABILITY_DISTANCE:
@@ -548,12 +620,13 @@ int main(int argc, char** argv) {
                     std::cout << "^^^ " << std::tuple{serial, button, state} << std::endl;
                 };
                 tool->motion = lamed([&](auto, auto, auto x, auto y) {
-                    vertices.back().position += vec2d{wl_fixed_to_double(x), wl_fixed_to_double(y)};
+                    //vertices.back().position += vec2d{wl_fixed_to_double(x), wl_fixed_to_double(y)};
+                    vertices.emplace_back(S*wl_fixed_to_double(x), S*wl_fixed_to_double(y));
                 });
                 tool->frame = lamed([&](auto, auto, auto) {
-                    if (vertices.back().pressure > 0) {
-                        vertices.push_back({});
-                    }
+                    // if (vertices.back().pressure > 0) {
+                    //     vertices.push_back({});
+                    // }
                 });
             });
         }
@@ -562,6 +635,7 @@ int main(int argc, char** argv) {
     wl_display_roundtrip(display);
 
     auto surface = wrapper{wl_compositor_create_surface(compositor)};
+    wl_surface_set_buffer_scale(surface, 2);
     auto xsurface = wrapper{zxdg_shell_v6_get_xdg_surface(shell, surface)};
     xsurface->configure = [](auto, auto xsurface, auto serial) noexcept {
         zxdg_surface_v6_ack_configure(xsurface, serial);
@@ -571,23 +645,26 @@ int main(int argc, char** argv) {
     std::cout << que.get_device().get_info<sycl::info::device::name>() << std::endl;
     std::cout << que.get_device().get_info<sycl::info::device::vendor>() << std::endl;
     auto channels = [&] {
-        auto free = [&](auto ptr) { sycl::free(ptr, que); };
-        return std::unique_ptr<double, decltype (free)> { sycl::malloc_device<double>(cx*cy, que), free };
+        auto deleter = [&](auto ptr) { sycl::free(ptr, que); };
+        using unique_type = std::unique_ptr<double, decltype (deleter)>;
+        return std::array<unique_type, 4> {
+            unique_type{ sycl::malloc_device<double>(cx*cy, que), deleter },
+            unique_type{ sycl::malloc_device<double>(cx*cy, que), deleter },
+            unique_type{ sycl::malloc_device<double>(cx*cy, que), deleter },
+            unique_type{ sycl::malloc_device<double>(cx*cy, que), deleter },
+        };
     }();
 
-    auto [buffer, pixels] = shm_allocate_buffer(shm, cx, cy);
+    auto [fd, buffer, pixels] = shm_allocate_buffer(shm, cx, cy);
     auto toplevel = wrapper{zxdg_surface_v6_get_toplevel(xsurface)};
     toplevel->configure = lamed([&](auto, auto, auto w, auto h, auto) {
-        std::cout << "toplevel configured: " << std::tuple{w, h} << std::endl;
-        cx = w;
-        cy = h;
-        if (cx && cy) {
-            auto [b, p] = shm_allocate_buffer(shm, cx, cy);
-            channels.reset(sycl::malloc_device<double>(cx*cy, que));
-            std::cout << b << std::endl;
-            std::cout << p << std::endl;
-            buffer = std::move(b);
-            pixels = p;
+        cx = 2*w;
+        cy = 2*h;
+        if (cx * cy) {
+            std::tie(fd, buffer, pixels) = shm_allocate_buffer(shm, cx, cy);
+            for (auto& channel : channels) {
+                channel.reset(sycl::malloc_device<double>(cx*cy, que));
+            }
         }
     });
     toplevel->close = lamed([&](auto...) {
@@ -595,11 +672,11 @@ int main(int argc, char** argv) {
     });
     zxdg_toplevel_v6_set_app_id(toplevel, std::filesystem::path(argv[0]).filename().c_str());
     if (pointer) {
-        pointer->button = lamed([&](auto, auto, auto serial, auto time, auto button, auto state) noexcept {
+        pointer->button = lamed([&](auto, auto, auto serial, auto, auto button, auto state) noexcept {
             if (state == WL_POINTER_BUTTON_STATE_PRESSED) {
                 switch (button) {
                 case BTN_LEFT:
-                    vertices.emplace_back(32768u, pointer_current);
+                    vertices.emplace_back(pointer_current);
                     break;
                 case BTN_RIGHT:
                     zxdg_toplevel_v6_show_window_menu(toplevel, seat, serial,
@@ -610,13 +687,6 @@ int main(int argc, char** argv) {
             }
         });
     }
-    if (touch) {
-        touch->motion = lamed([&](auto, auto, auto, auto, auto x, auto y) {
-            vertices.emplace_back(vertex{8192,
-                                         {wl_fixed_to_double(x),
-                                          wl_fixed_to_double(y)}});
-        });
-    }
 
     wl_surface_commit(surface);
 
@@ -624,64 +694,70 @@ int main(int argc, char** argv) {
         if (quit) {
             break;
         }
-        if (cx && cy) {
-            static constexpr size_t N = 8;
+        if (cx * cy) {
             static constexpr double TAU = 2.0 * std::numbers::pi;
-            static constexpr double PHI = std::numbers::phi;
+            static constexpr double PSI = 1.0 / std::numbers::phi;
 
-            auto cbuffer = sycl::buffer<double, 2>{channels.get(), {cy, cx}};
-            auto pbuffer = sycl::buffer<color, 2>{pixels, {cy, cx}};
+            auto buffer_ch = std::tuple{
+                sycl::buffer<double, 2>{channels[0].get(), {cy, cx}},
+                sycl::buffer<double, 2>{channels[1].get(), {cy, cx}},
+                sycl::buffer<double, 2>{channels[2].get(), {cy, cx}},
+                sycl::buffer<double, 2>{channels[3].get(), {cy, cx}},
+            };
+            auto buffer_px = sycl::buffer<color, 2>{pixels, {cy, cx}};
             que.submit([&](auto& h) noexcept {
-                auto ap = pbuffer.get_access<sycl::access::mode::write>(h);
-                auto ac = cbuffer.get_access<sycl::access::mode::write>(h);
+                auto ach = std::get<0>(buffer_ch).template get_access<sycl::access::mode::write>(h);
+                auto rch = std::get<1>(buffer_ch).template get_access<sycl::access::mode::write>(h);
+                auto gch = std::get<2>(buffer_ch).template get_access<sycl::access::mode::write>(h);
+                auto bch = std::get<3>(buffer_ch).template get_access<sycl::access::mode::write>(h);
+                auto pix = buffer_px.template get_access<sycl::access::mode::write>(h);
                 h.parallel_for({cy, cx}, [=](auto idx) noexcept {
-                    ap[idx] = {0, 0, 0, 0};
-                    ac[idx] = 0.0;
+                    pix[idx] = { };
+                    ach[idx] = { };
+                    rch[idx] = { };
+                    gch[idx] = { };
+                    bch[idx] = { };
                 });
             });
             if (vertices.empty() == false) {
-                auto vbuffer = sycl::buffer<vertex, 1>{vertices.data(), vertices.size()};
+                auto buffer_vtx = sycl::buffer<vec2d, 1>{vertices.data(), vertices.size()};
                 que.submit([&](auto& h) noexcept {
-                    auto ac = cbuffer.get_access<sycl::access::mode::read_write>(h);
-                    auto av = vbuffer.get_access<sycl::access::mode::read>(h);
+                    auto ach = std::get<0>(buffer_ch).template get_access<sycl::access::mode::write>(h);
+                    auto rch = std::get<1>(buffer_ch).template get_access<sycl::access::mode::write>(h);
+                    auto gch = std::get<2>(buffer_ch).template get_access<sycl::access::mode::write>(h);
+                    auto bch = std::get<3>(buffer_ch).template get_access<sycl::access::mode::write>(h);
+                    auto vtx = buffer_vtx.get_access<sycl::access::mode::read>(h);
                     h.parallel_for({vertices.size()}, [=](auto idx) noexcept {
-                        auto vertex = av[idx];
-                        auto n = 1 + (vertex.pressure) / N;
-                        for (uint32_t i = 0; i < n; ++i) {
-                            auto theta = std::polar(sqrt(i)/4, (1+i) * TAU * PHI);
-                            //auto theta = std::polar(sqrt(i)*32, (1+i) * TAU * PHI);
-                            //auto theta = std::polar((double) i, (1+i) * TAU * PHI);
-                            auto pt = vertex.position + vec2d{theta.real(), theta.imag()};
-                            auto d = (1.0 - ((double) (1+i) / n));
-                            auto y = pt[1];
-                            auto x = pt[0];
-                            if (0 <= x && x < cx && 0 <= y && y < cy) {
-                                uint8_t b = d;
-                                auto& c = ac[{(size_t) y, (size_t) x}];
-                                c += d;
+                        for (uint32_t i = 0; i < N; ++i) {
+                            auto theta = std::polar(sqrt(1+i)/D, (1+i) * TAU * PSI);
+                            auto pt = vtx[idx] + vec2d{theta.real(), theta.imag()};
+                            size_t x = pt[0];
+                            size_t y = pt[1];
+                            if (0 < x && x < cx && 0 < y && y < cy) {
+                                double d = 1.0 - static_cast<double>(i+1)/N;
+                                ach[{y, x}] += 255; // d/4;
+                                rch[{y, x}] += hue(d*1530)[2]/1;
+                                gch[{y, x}] += hue(d*1530)[1]/1;
+                                bch[{y, x}] += hue(d*1530)[0]/1;
                             }
                         }
                     });
                 });
-                que.submit([&](auto& h) noexcept {
-                    auto ac = cbuffer.get_access<sycl::access::mode::read_write>(h);
-                    auto ap = pbuffer.get_access<sycl::access::mode::read_write>(h);
-                    h.parallel_for({cy, cx}, [=](auto idx) noexcept {
-                        auto& p = ap[idx];
-                        auto& c = ac[idx];
-                        p[0] = 255 - 255.0 / (c + 1);
-                        p[1] = 255 - 255.0 / (c + 1);
-                        p[2] = 255 - 255.0 / (c + 1);
-                        p[3] = 255 - 255.0 / (c + 1);
-                    });
-                });
             }
-            // que.submit([&](auto& h) noexcept {
-            //     auto ap = pbuffer.get_access<sycl::access::mode::read_write>(h);
-            //     h.parallel_for({cy, cx}, [=](auto idx) noexcept {
-            //         ap[idx] = ~ap[idx];
-            //     });
-            // });
+            que.submit([&](auto& h) noexcept {
+                auto ach = std::get<0>(buffer_ch).template get_access<sycl::access::mode::read>(h);
+                auto rch = std::get<1>(buffer_ch).template get_access<sycl::access::mode::read>(h);
+                auto gch = std::get<2>(buffer_ch).template get_access<sycl::access::mode::read>(h);
+                auto bch = std::get<3>(buffer_ch).template get_access<sycl::access::mode::read>(h);
+                auto pix = buffer_px.template get_access<sycl::access::mode::read_write>(h);
+                h.parallel_for({cy, cx}, [=](auto idx) noexcept {
+                    auto& p = pix[idx];
+                    p[3] = 255;
+                    p[2] = 255 - 255.0 / (rch[idx] + 1);
+                    p[1] = 255 - 255.0 / (gch[idx] + 1);
+                    p[0] = 255 - 255.0 / (bch[idx] + 1);
+                });
+            });
         }
         wl_surface_damage(surface, 0, 0, cx, cy);
         wl_surface_attach(surface, buffer, 0, 0);
