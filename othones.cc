@@ -242,12 +242,12 @@ namespace aux::inline wayland
 
     template <class T> concept client_like = (interface_ptr<T> != nullptr);
 
-    template <client_like T> constexpr void (*deleter)(T*) = [](auto) { static_assert("unknown deleter"); };
+    template <client_like T> void (*deleter)(T*) = [](auto) { static_assert("unknown deleter"); };
 
     template <client_like T> struct listener_type { };
 #define INTERN_CLIENT_LIKE_CONCEPT(CLIENT, DELETER, LISTENER)          \
     template <> constexpr wl_interface const *const interface_ptr<CLIENT> = &CLIENT##_interface; \
-    template <> constexpr void (*deleter<CLIENT>)(CLIENT*) = DELETER;   \
+    template <> void (*deleter<CLIENT>)(CLIENT*) = DELETER;   \
     template <> struct listener_type<CLIENT> : LISTENER { };
     INTERN_CLIENT_LIKE_CONCEPT(wl_display,            wl_display_disconnect,         empty_type)
     INTERN_CLIENT_LIKE_CONCEPT(wl_registry,           wl_registry_destroy,           wl_registry_listener)
@@ -274,12 +274,7 @@ namespace aux::inline wayland
 
     template <client_like T>
     auto make_unique(T* raw = nullptr) noexcept {
-        // (Closures are needed to move the unique...)
-        auto del = [](auto p) noexcept {
-            //std::cerr << "deleting... " << p << ':' << interface_ptr<T>->name << std::endl;
-            deleter<T>(p);
-        };
-        return std::unique_ptr<T, decltype (del)>(raw, del);
+        return std::unique_ptr<T, decltype (deleter<T>)>(raw, deleter<T>);
     }
     template <client_like T>
     using unique_ptr_type = decltype (make_unique<T>());
