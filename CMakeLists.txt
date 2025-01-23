@@ -31,12 +31,12 @@ include(FindPackageHandleStandardArgs)
 find_package_handle_standard_args(WaylandProtocols DEFAULT_MSG WAYLANDPROTOCOLS_PATH)
 mark_as_advanced(WAYLANDPROTOCOLS_PATH)
 
-set(XDG_SHELL_V6_PROTOCOL ${WAYLANDPROTOCOLS_PATH}/unstable/xdg-shell/xdg-shell-unstable-v6.xml)
+set(XDG_SHELL_PROTOCOL ${WAYLANDPROTOCOLS_PATH}/stable/xdg-shell/xdg-shell.xml)
 set(ZWP_TABLET_V2_PROTOCOL ${WAYLANDPROTOCOLS_PATH}/unstable/tablet/tablet-unstable-v2.xml)
 add_custom_command(
-  OUTPUT xdg-shell-v6-private.c
-  COMMAND wayland-scanner client-header ${XDG_SHELL_V6_PROTOCOL} xdg-shell-v6-client.h
-  COMMAND wayland-scanner private-code  ${XDG_SHELL_V6_PROTOCOL} xdg-shell-v6-private.c)
+  OUTPUT xdg-shell-private.c
+  COMMAND wayland-scanner client-header ${XDG_SHELL_PROTOCOL} xdg-shell-client.h
+  COMMAND wayland-scanner private-code  ${XDG_SHELL_PROTOCOL} xdg-shell-private.c)
 add_custom_command(
   OUTPUT zwp-tablet-v2-private.c
   COMMAND wayland-scanner client-header ${ZWP_TABLET_V2_PROTOCOL} zwp-tablet-v2-client.h
@@ -44,7 +44,7 @@ add_custom_command(
 
 add_executable(othones
   othones.cc
-  ${CMAKE_CURRENT_BINARY_DIR}/xdg-shell-v6-private.c
+  ${CMAKE_CURRENT_BINARY_DIR}/xdg-shell-private.c
   ${CMAKE_CURRENT_BINARY_DIR}/zwp-tablet-v2-private.c)
 
 target_link_libraries(othones

@@ -231,7 +231,7 @@ namespace std
 #include <wayland-client.h>
 #include <wayland-client.h>
 
-#include "xdg-shell-v6-client.h"
+#include "xdg-shell-client.h"
 #include "zwp-tablet-v2-client.h"
 
 
@@ -261,9 +261,9 @@ namespace aux::inline wayland
     INTERN_CLIENT_LIKE_CONCEPT(wl_keyboard,           wl_keyboard_destroy,           wl_keyboard_listener)
     INTERN_CLIENT_LIKE_CONCEPT(wl_pointer,            wl_pointer_destroy,            wl_pointer_listener)
     INTERN_CLIENT_LIKE_CONCEPT(wl_touch,              wl_touch_destroy,              wl_touch_listener)
-    INTERN_CLIENT_LIKE_CONCEPT(zxdg_shell_v6,         zxdg_shell_v6_destroy,         zxdg_shell_v6_listener)
-    INTERN_CLIENT_LIKE_CONCEPT(zxdg_surface_v6,       zxdg_surface_v6_destroy,       zxdg_surface_v6_listener)
-    INTERN_CLIENT_LIKE_CONCEPT(zxdg_toplevel_v6,      zxdg_toplevel_v6_destroy,      zxdg_toplevel_v6_listener)
+    INTERN_CLIENT_LIKE_CONCEPT(xdg_wm_base,           xdg_wm_base_destroy,           xdg_wm_base_listener)
+    INTERN_CLIENT_LIKE_CONCEPT(xdg_surface,           xdg_surface_destroy,           xdg_surface_listener)
+    INTERN_CLIENT_LIKE_CONCEPT(xdg_toplevel,          xdg_toplevel_destroy,          xdg_toplevel_listener)
     INTERN_CLIENT_LIKE_CONCEPT(zwp_tablet_manager_v2, zwp_tablet_manager_v2_destroy, empty_type)
     INTERN_CLIENT_LIKE_CONCEPT(zwp_tablet_seat_v2,    zwp_tablet_seat_v2_destroy,    zwp_tablet_seat_v2_listener)
     INTERN_CLIENT_LIKE_CONCEPT(zwp_tablet_tool_v2,    zwp_tablet_tool_v2_destroy,    zwp_tablet_tool_v2_listener)
@@ -453,7 +453,7 @@ int main(int, char** argv) {
     wrapper<wl_touch> touch;
     bool quit = false;
 
-    wrapper<zxdg_shell_v6> shell;
+    wrapper<xdg_wm_base> shell;
 
     size_t scale = 2; // possible maximum scale, would be adjust to the smallest output...
     size_t cx = 1920;
@@ -545,10 +545,10 @@ int main(int, char** argv) {
                 }
             });
         }
-        else if (interface == interface_ptr<zxdg_shell_v6>->name) {
-            shell = wrapper{registry_bind<zxdg_shell_v6>(registry, name, version)};
+        else if (interface == interface_ptr<xdg_wm_base>->name) {
+            shell = wrapper{registry_bind<xdg_wm_base>(registry, name, version)};
             shell->ping = [](auto, auto shell, auto serial) noexcept {
-                zxdg_shell_v6_pong(shell, serial);
+                xdg_wm_base_pong(shell, serial);
             };
         }
         else if (interface == interface_ptr<wl_output>->name) {
@@ -634,9 +634,9 @@ int main(int, char** argv) {
 
     auto surface = wrapper{wl_compositor_create_surface(compositor)};
     wl_surface_set_buffer_scale(surface, scale);
-    auto xsurface = wrapper{zxdg_shell_v6_get_xdg_surface(shell, surface)};
+    auto xsurface = wrapper{xdg_wm_base_get_xdg_surface(shell, surface)};
     xsurface->configure = [](auto, auto xsurface, auto serial) noexcept {
-        zxdg_surface_v6_ack_configure(xsurface, serial);
+        xdg_surface_ack_configure(xsurface, serial);
     };
 
     auto que = sycl::queue();
@@ -654,7 +654,7 @@ int main(int, char** argv) {
     }();
 
     auto [fd, buffer, pixels] = shm_allocate_buffer(shm, cx, cy);
-    auto toplevel = wrapper{zxdg_surface_v6_get_toplevel(xsurface)};
+    auto toplevel = wrapper{xdg_surface_get_toplevel(xsurface)};
     toplevel->configure = lamed([&](auto, auto, auto w, auto h, auto) {
         cx = scale*w;
         cy = scale*h;
@@ -668,7 +668,7 @@ int main(int, char** argv) {
     toplevel->close = lamed([&](auto...) {
         quit = true;
     });
-    zxdg_toplevel_v6_set_app_id(toplevel, std::filesystem::path(argv[0]).filename().c_str());
+    xdg_toplevel_set_app_id(toplevel, std::filesystem::path(argv[0]).filename().c_str());
     if (pointer) {
         pointer->button = lamed([&](auto, auto, auto serial, auto, auto button, auto state) noexcept {
             if (state == WL_POINTER_BUTTON_STATE_PRESSED) {
@@ -677,9 +677,9 @@ int main(int, char** argv) {
                     vertices.emplace_back(pointer_current);
                     break;
                 case BTN_RIGHT:
-                    zxdg_toplevel_v6_show_window_menu(toplevel, seat, serial,
-                                                      pointer_current[0] / scale,
-                                                      pointer_current[1] / scale); //!!!
+                    xdg_toplevel_show_window_menu(toplevel, seat, serial,
+                                                  pointer_current[0] / scale,
+                                                  pointer_current[1] / scale); //!!!
                     break;
                 }
             }
